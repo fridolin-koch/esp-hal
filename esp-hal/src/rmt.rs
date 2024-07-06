@@ -448,7 +448,8 @@ where
     }
 }
 
-/// An in-progress transaction for a single shot TX transaction.
+/// An in-progress transaction for a single shot TX transaction that consists of
+/// multiple data blocks.
 pub struct SingleShotTxTransaction<'a, C, T: Into<u32> + Copy>
 where
     C: TxChannel,
@@ -513,6 +514,44 @@ where
             }
         }
 
+        Ok(self.channel)
+    }
+}
+
+/// An in-progress transaction for a single shot TX transaction that consists of
+/// a single data block.
+pub struct SingleShotTxTransactionSingleBlock<C>
+where
+    C: TxChannel,
+{
+    channel: C,
+}
+
+impl<C> SingleShotTxTransactionSingleBlock<C>
+where
+    C: TxChannel,
+{
+    /// Wait for the transaction to complete
+    pub fn wait(self) -> Result<C, (Error, C)> {
+        loop {
+            if <C as private::TxChannelInternal<crate::Blocking>>::is_error() {
+                return Err((Error::TransmissionError, self.channel));
+            }
+
+            if <C as private::TxChannelInternal<crate::Blocking>>::is_done() {
+                break;
+            }
+        }
+
+        Ok(self.channel)
+    }
+
+    /// Don't wait for the transaction to complete
+    pub fn no_wait(self) -> Result<C, (Error, C)> {
+        // TODO: Not sure if this is so useful?
+        if <C as private::TxChannelInternal<crate::Blocking>>::is_error() {
+            return Err((Error::TransmissionError, self.channel));
+        }
         Ok(self.channel)
     }
 }
@@ -1000,6 +1039,29 @@ pub trait TxChannel: private::TxChannelInternal<crate::Blocking> {
         }
     }
 
+    /// Start transmitting a single block of pulse codes. The block must fit
+    /// into the TX RAM. This returns a [`SingleShotTxTransactionSingleBlock`]
+    /// which can be used to wait for the transaction to complete and get
+    /// back the channel for further use. Alternatively, it can be used to
+    /// just retrieve the channel back without waiting for the tx to
+    /// complete. If the provided data exceeds rmt ram channel size, an
+    /// error is returned.
+    fn transmit_single_block<T: Into<u32> + Copy>(
+        self,
+        data: &[T],
+    ) -> Result<SingleShotTxTransactionSingleBlock<Self>, (Error, Self)>
+    where
+        Self: Sized,
+    {
+        if data.len() > constants::RMT_CHANNEL_RAM_SIZE {
+            return Err((Error::Overflow, self));
+        }
+        Self::send_raw(data, false, 0);
+        Ok(SingleShotTxTransactionSingleBlock {
+            channel: self,
+        })
+    }
+
     /// Start transmitting the given pulse code continuously.
     /// This returns a [`ContinuousTxTransaction`] which can be used to stop the
     /// ongoing transmission and get back the channel for further use.
@@ -1031,6 +1093,11 @@ pub trait TxChannel: private::TxChannelInternal<crate::Blocking> {
 
         let _index = Self::send_raw(data, true, loopcount);
         Ok(ContinuousTxTransaction { channel: self })
+    }
+
+    /// Checks if the channel is busy transmitting.
+    fn is_busy(&self) -> bool {
+        !<Self as private::TxChannelInternal<crate::Blocking>>::is_done()
     }
 }
 
