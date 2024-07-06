@@ -1097,7 +1097,7 @@ pub trait TxChannel: private::TxChannelInternal<crate::Blocking> {
 
     /// Checks if the channel is busy transmitting.
     fn is_busy(&self) -> bool {
-        !<Self as private::TxChannelInternal<crate::Blocking>>::is_done()
+        <Self as private::TxChannelInternal<crate::Blocking>>::is_busy()
     }
 }
 
@@ -1550,6 +1550,8 @@ mod private {
 
         fn is_done() -> bool;
 
+        fn is_busy() -> bool;
+
         fn is_error() -> bool;
 
         fn is_threshold_set() -> bool;
@@ -1864,6 +1866,11 @@ mod chip_specific {
                     fn is_done() -> bool {
                         let rmt = unsafe { &*crate::peripherals::RMT::PTR };
                         rmt.int_raw().read().[< ch $ch_num _tx_end >]().bit()
+                    }
+
+                    fn is_busy() -> bool {
+                        let rmt = unsafe { &*crate::peripherals::RMT::PTR };
+                        rmt.[< ch $ch_num _tx_status >]().read().state() == 1
                     }
 
                     fn is_error() -> bool {
@@ -2251,6 +2258,11 @@ mod chip_specific {
                     fn is_done() -> bool {
                         let rmt = unsafe { &*crate::peripherals::RMT::PTR };
                         rmt.int_raw().read().[< ch $ch_num _tx_end >]().bit()
+                    }
+
+                    fn is_busy() -> bool {
+                        let rmt = unsafe { &*crate::peripherals::RMT::PTR };
+                        rmt.[< ch $ch_num status >]().read().state() == 1
                     }
 
                     fn is_error() -> bool {
