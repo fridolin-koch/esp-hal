@@ -1,18 +1,18 @@
 //! This shows how to continously receive data via I2S.
 //!
-//! Pins used:
-//! MCLK    GPIO0 (not ESP32)
-//! BCLK    GPIO2
-//! WS      GPIO4
-//! DIN     GPIO5
-//!
 //! Without an additional I2S source device you can connect 3V3 or GND to DIN
 //! to read 0 or 0xFF or connect DIN to WS to read two different values.
 //!
 //! You can also inspect the MCLK, BCLK and WS with a logic analyzer.
+//!
+//! The following wiring is assumed:
+//! - MCLK =>  GPIO0 (not supported on ESP32)
+//! - BCLK =>  GPIO2
+//! - WS   =>  GPIO4
+//! - DIN  =>  GPIO5
 
 //% CHIPS: esp32 esp32c3 esp32c6 esp32h2 esp32s2 esp32s3
-//% FEATURES: async embassy embassy-time-timg0 embassy-generic-timers
+//% FEATURES: async embassy embassy-generic-timers
 
 #![no_std]
 #![no_main]
@@ -32,15 +32,15 @@ use esp_hal::{
 };
 use esp_println::println;
 
-#[main]
+#[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) {
     println!("Init!");
     let peripherals = Peripherals::take();
     let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let timg0 = TimerGroup::new_async(peripherals.TIMG0, &clocks);
-    esp_hal_embassy::init(&clocks, timg0);
+    let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
+    esp_hal_embassy::init(&clocks, timg0.timer0);
 
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
@@ -63,7 +63,7 @@ async fn main(_spawner: Spawner) {
         &clocks,
     );
 
-    #[cfg(not(features = "esp32"))]
+    #[cfg(not(feature = "esp32"))]
     let i2s = i2s.with_mclk(io.pins.gpio0);
 
     let i2s_rx = i2s

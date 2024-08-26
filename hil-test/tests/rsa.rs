@@ -6,8 +6,6 @@
 #![no_main]
 
 use crypto_bigint::{Uint, U1024, U512};
-use defmt_rtt as _;
-use esp_backtrace as _;
 use esp_hal::{
     peripherals::Peripherals,
     prelude::*,
@@ -20,6 +18,8 @@ use esp_hal::{
     },
     Blocking,
 };
+use hil_test as _;
+
 const BIGNUM_1: U512 = Uint::from_be_hex(
     "c7f61058f96db3bd87dbab08ab03b4f7f2f864eac249144adea6a65f97803b719d8ca980b7b3c0389c1c7c6\
     7dc353c5e0ec11f5fc8ce7f6073796cc8f73fa878",
@@ -40,7 +40,7 @@ struct Context<'a> {
 impl Context<'_> {
     pub fn init() -> Self {
         let peripherals = Peripherals::take();
-        let mut rsa = Rsa::new(peripherals.RSA, None);
+        let mut rsa = Rsa::new(peripherals.RSA);
         nb::block!(rsa.ready()).unwrap();
 
         Context { rsa }
@@ -148,7 +148,7 @@ mod tests {
         #[cfg(feature = "esp32")]
         {
             let mut rsamulti =
-                RsaMultiplication::<operand_sizes::Op512, esp_hal::Blocking>::new(ctx.rsa);
+                RsaMultiplication::<operand_sizes::Op512, esp_hal::Blocking>::new(&mut ctx.rsa);
             rsamulti.start_multiplication(operand_a, operand_b);
             rsamulti.read_results(&mut outbuf);
         }

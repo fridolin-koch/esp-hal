@@ -1,5 +1,10 @@
 //! # Interrupt support
 //!
+//! ## Overview
+//! This module routes one or more peripheral interrupt sources to any one
+//! of the CPU’s peripheral interrupts.
+//!
+//! ## Configuration
 //! Usually peripheral drivers offer a mechanism to register your interrupt
 //! handler. e.g. the systimer offers `set_interrupt_handler` to register a
 //! handler for a specific alarm. Other drivers might take an interrupt handler
@@ -7,8 +12,20 @@
 //!
 //! This is the preferred way to register handlers.
 //!
-//! ## Example using the peripheral driver to register an interrupt handler
-
+//! There are additional ways to register interrupt handlers which are generally
+//! only meant to be used in very special situations (mostly internal to the HAL
+//! or the supporting libraries). Those are outside the scope of this
+//! documentation.
+//!
+//! It is even possible, but not recommended, to bind an interrupt directly to a
+//! CPU interrupt. This can offer lower latency, at the cost of more complexity
+//! in the interrupt handler. See the `direct_vectoring.rs` example
+//!
+//! We reserve a number of CPU interrupts, which cannot be used; see
+//! [`RESERVED_INTERRUPTS`].
+//!
+//! ## Examples
+//! ### Using the Peripheral Driver to Register an Interrupt Handler
 //! ```rust, no_run
 #![doc = crate::before_snippet!()]
 //! # use core::cell::RefCell;
@@ -55,18 +72,6 @@
 //!     });
 //! }
 //! ```
-//! There are additional ways to register interrupt handlers which are generally
-//! only meant to be used in very special situations (mostly internal to the HAL
-//! or the supporting libraries). Those are outside the scope of this
-//! documentation.
-//!
-//! It is even possible, but not recommended, to bind an interrupt directly to a
-//! CPU interrupt. This can offer lower latency, at the cost of more complexity
-//! in the interrupt handler. See the `direct_vectoring.rs` example
-//!
-//! We reserve a number of CPU interrupts, which cannot be used; see
-//! [`RESERVED_INTERRUPTS`].
-#![warn(missing_docs)]
 
 use core::ops::BitAnd;
 
@@ -220,10 +225,6 @@ impl Iterator for InterruptStatusIterator {
     type Item = u8;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.idx == usize::MAX {
-            return None;
-        }
-
         for i in self.idx..STATUS_WORDS {
             if self.status.status[i] != 0 {
                 let bit = self.status.status[i].trailing_zeros();

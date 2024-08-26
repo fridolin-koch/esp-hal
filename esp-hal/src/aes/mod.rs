@@ -1,17 +1,21 @@
-//! # Advanced Encryption Standard (AES) support.
+//! # Advanced Encryption Standard (AES).
 //!
 //! ## Overview
+//! The AES accelerator is a hardware device that speeds up computation
+//! using AES algorithm significantly, compared to AES algorithms implemented
+//! solely in software.  The AES accelerator has two working modes, which are
+//! Typical AES and AES-DMA.
 //!
-//! The AES module provides an interface to interact with the AES peripheral,
-//! provides encryption and decryption capabilities for ESP chips using the AES
-//! algorithm. We currently support the following AES encryption modes:
+//! ## Configuration
+//! The AES peripheral can be configured to encrypt or decrypt data using
+//! different encryption/decryption modes.
 //!
-//! * AES-128
-//! * AES-192
-//! * AES-256
+//! When using AES-DMA, the peripheral can be configured to use different block
+//! cipher modes such as ECB, CBC, OFB, CTR, CFB8, and CFB128.
 //!
-//! ## Example
-//!
+//! ## Examples
+//! ### Encrypting and Decrypting a Message
+//! Simple example of encrypting and decrypting a message using AES-128:
 //! ```rust, no_run
 #![doc = crate::before_snippet!()]
 //! # use esp_hal::aes::{Aes, Mode};
@@ -32,21 +36,15 @@
 //! # }
 //! ```
 //! 
-//! ### Implementation State
+//! ### AES-DMA
+//! Visit the [AES-DMA] test for a more advanced example of using AES-DMA
+//! mode.
 //!
-//! * DMA mode is currently not supported on ESP32 and ESP32S2 ⚠️
+//! [AES-DMA]: https://github.com/esp-rs/esp-hal/blob/main/hil-test/tests/aes_dma.rs
 //!
-//! ## DMA-AES Mode
-//!
-//! Supports 6 block cipher modes including `ECB/CBC/OFB/CTR/CFB8/CFB128`.
-//!
-//! * Initialization vector (IV) is currently not supported ⚠️
-//!
-//! ⚠️: The examples for AES with DMA peripheral are quite extensive, so for a more
-//! detailed study of how to use this driver please visit [the repository
-//! with corresponding example].
-//!
-//! [the repository with corresponding example]: https://github.com/esp-rs/esp-hal/blob/main/hil-test/tests/aes_dma.rs
+//! ## Implementation State
+//! * AES-DMA mode is currently not supported on ESP32 and ESP32S2
+//! * AES-DMA Initialization Vector (IV) is currently not supported
 
 use crate::{
     peripheral::{Peripheral, PeripheralRef},
@@ -135,6 +133,10 @@ impl<'d> Aes<'d> {
     /// Constructs a new `Aes` instance.
     pub fn new(aes: impl Peripheral<P = AES> + 'd) -> Self {
         crate::into_ref!(aes);
+
+        crate::system::PeripheralClockControl::reset(crate::system::Peripheral::Aes);
+        crate::system::PeripheralClockControl::enable(crate::system::Peripheral::Aes);
+
         let mut ret = Self {
             aes,
             alignment_helper: AlignmentHelper::native_endianess(),
@@ -181,9 +183,11 @@ impl<'d> Aes<'d> {
 
 /// Specifications for AES flavours
 pub trait AesFlavour: crate::private::Sealed {
+    /// Type of the AES key, a fixed-size array of bytes
+    ///
+    /// The size of this type depends on various factors, such as the device
+    /// being targeted and the desired key size.
     type KeyType<'b>;
-    const ENCRYPT_MODE: u32;
-    const DECRYPT_MODE: u32;
 }
 
 /// Marker type for AES-128
@@ -204,7 +208,9 @@ impl crate::private::Sealed for Aes256 {}
 /// State matrix endianness
 #[cfg(any(esp32, esp32s2))]
 pub enum Endianness {
+    /// Big endian (most-significant byte at the smallest address)
     BigEndian    = 1,
+    /// Little endian (least-significant byte at the smallest address)
     LittleEndian = 0,
 }
 
@@ -216,21 +222,23 @@ pub enum Endianness {
 /// CTR, CFB8, and CFB128.
 #[cfg(any(esp32c3, esp32c6, esp32h2, esp32s3))]
 pub mod dma {
-    use embedded_dma::{ReadBuffer, WriteBuffer};
-
     use crate::{
         aes::{Key, Mode},
         dma::{
             dma_private::{DmaSupport, DmaSupportRx, DmaSupportTx},
             AesPeripheral,
             Channel,
-            ChannelTypes,
+            ChannelRx,
+            ChannelTx,
             DescriptorChain,
+            DmaChannel,
             DmaDescriptor,
             DmaPeripheral,
             DmaTransferTxRx,
+            ReadBuffer,
             RxPrivate,
             TxPrivate,
+            WriteBuffer,
         },
     };
 
@@ -255,9 +263,10 @@ pub mod dma {
     /// A DMA capable AES instance.
     pub struct AesDma<'d, C>
     where
-        C: ChannelTypes,
+        C: DmaChannel,
         C::P: AesPeripheral,
     {
+        /// The underlying [`Aes`](super::Aes) driver
         pub aes: super::Aes<'d>,
 
         pub(crate) channel: Channel<'d, C, crate::Blocking>,
@@ -265,11 +274,13 @@ pub mod dma {
         rx_chain: DescriptorChain,
     }
 
+    /// Functionality for using AES with DMA.
     pub trait WithDmaAes<'d, C>
     where
-        C: ChannelTypes,
+        C: DmaChannel,
         C::P: AesPeripheral,
     {
+        /// Enable DMA for the current instance of the AES driver
         fn with_dma(
             self,
             channel: Channel<'d, C, crate::Blocking>,
@@ -280,7 +291,7 @@ pub mod dma {
 
     impl<'d, C> WithDmaAes<'d, C> for crate::aes::Aes<'d>
     where
-        C: ChannelTypes,
+        C: DmaChannel,
         C::P: AesPeripheral,
     {
         fn with_dma(
@@ -302,7 +313,7 @@ pub mod dma {
 
     impl<'d, C> core::fmt::Debug for AesDma<'d, C>
     where
-        C: ChannelTypes,
+        C: DmaChannel,
         C::P: AesPeripheral,
     {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -312,7 +323,7 @@ pub mod dma {
 
     impl<'d, C> DmaSupport for AesDma<'d, C>
     where
-        C: ChannelTypes,
+        C: DmaChannel,
         C::P: AesPeripheral,
     {
         fn peripheral_wait_dma(&mut self, _is_tx: bool, _is_rx: bool) {
@@ -332,10 +343,10 @@ pub mod dma {
 
     impl<'d, C> DmaSupportTx for AesDma<'d, C>
     where
-        C: ChannelTypes,
+        C: DmaChannel,
         C::P: AesPeripheral,
     {
-        type TX = C::Tx<'d>;
+        type TX = ChannelTx<'d, C>;
 
         fn tx(&mut self) -> &mut Self::TX {
             &mut self.channel.tx
@@ -348,10 +359,10 @@ pub mod dma {
 
     impl<'d, C> DmaSupportRx for AesDma<'d, C>
     where
-        C: ChannelTypes,
+        C: DmaChannel,
         C::P: AesPeripheral,
     {
-        type RX = C::Rx<'d>;
+        type RX = ChannelRx<'d, C>;
 
         fn rx(&mut self) -> &mut Self::RX {
             &mut self.channel.rx
@@ -364,7 +375,7 @@ pub mod dma {
 
     impl<'d, C> AesDma<'d, C>
     where
-        C: ChannelTypes,
+        C: DmaChannel,
         C::P: AesPeripheral,
     {
         /// Writes the encryption key to the AES hardware, checking that its
@@ -397,11 +408,11 @@ pub mod dma {
             mode: Mode,
             cipher_mode: CipherMode,
             key: K,
-        ) -> Result<DmaTransferTxRx<Self>, crate::dma::DmaError>
+        ) -> Result<DmaTransferTxRx<'_, Self>, crate::dma::DmaError>
         where
             K: Into<Key>,
-            TXBUF: ReadBuffer<Word = u8>,
-            RXBUF: WriteBuffer<Word = u8>,
+            TXBUF: ReadBuffer,
+            RXBUF: WriteBuffer,
         {
             let (write_ptr, write_len) = unsafe { words.read_buffer() };
             let (read_ptr, read_len) = unsafe { read_buffer.write_buffer() };

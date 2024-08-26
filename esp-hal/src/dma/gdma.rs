@@ -1,23 +1,21 @@
-//! # Direct Memory Access
+//! # General Direct Memory Access (GMDA)
 //!
 //! ## Overview
+//! GDMA is a feature that allows peripheral-to-memory, memory-to-peripheral,
+//! and memory-to-memory data transfer at high speed. The CPU is not involved in
+//! the GDMA transfer and therefore is more efficient with less workload.
 //!
-//! The GDMA (General DMA) module is a part of the DMA (Direct Memory Access)
-//! driver for ESP chips. Of the Espressif chip range, every chip except of
-//! `ESP32` and `ESP32-S2` uses the `GDMA` type of direct memory access.
+//! The `GDMA` module provides multiple DMA channels, each capable of managing
+//! data transfer for various peripherals.
 //!
-//! DMA is a hardware feature that allows data transfer between memory and
-//! peripherals without involving the CPU, resulting in efficient data movement
-//! and reduced CPU overhead. The `GDMA` module provides multiple DMA channels,
-//! each capable of managing data transfer for various peripherals.
-//!
-//! This module implements DMA channels, such as `channel0`, `channel1` and so
-//! on. Each channel struct implements the `ChannelTypes` trait, which provides
-//! associated types for peripheral configuration.
-//!
+//! ## Configuration
 //! GDMA peripheral can be initializes using the `new` function, which requires
 //! a DMA peripheral instance and a clock control reference.
 //!
+//! ## Usage
+//! This module implements DMA channels, such as `channel0`, `channel1` and so
+//! on. Each channel struct implements the `ChannelTypes` trait, which provides
+//! associated types for peripheral configuration.
 //! <em>PS: Note that the number of DMA channels is chip-specific.</em>
 
 use crate::{
@@ -93,6 +91,13 @@ impl<const N: u8> RegisterAccess for Channel<N> {
         Self::ch()
             .in_conf0()
             .modify(|_, w| w.mem_trans_en().bit(value));
+    }
+
+    #[cfg(esp32s3)]
+    fn set_out_ext_mem_block_size(size: DmaExtMemBKSize) {
+        Self::ch()
+            .out_conf1()
+            .modify(|_, w| unsafe { w.out_ext_mem_bk_size().bits(size as u8) });
     }
 
     fn set_out_burstmode(burst_mode: bool) {
@@ -206,6 +211,13 @@ impl<const N: u8> RegisterAccess for Channel<N> {
         Self::out_int()
             .clr()
             .write(|w| w.out_eof().clear_bit_by_one());
+    }
+
+    #[cfg(esp32s3)]
+    fn set_in_ext_mem_block_size(size: DmaExtMemBKSize) {
+        Self::ch()
+            .in_conf1()
+            .modify(|_, w| unsafe { w.in_ext_mem_bk_size().bits(size as u8) });
     }
 
     fn set_in_burstmode(burst_mode: bool) {
@@ -487,10 +499,20 @@ macro_rules! impl_channel {
             }
 
             impl ChannelTypes for Channel<$num> {
-                type P = SuitablePeripheral<$num>;
-                type Tx<'a> = ChannelTx<'a, ChannelTxImpl<$num>, Channel<$num>>;
-                type Rx<'a> = ChannelRx<'a, ChannelRxImpl<$num>, Channel<$num>>;
                 type Binder = ChannelInterruptBinder<$num>;
+            }
+
+            /// A description of a GDMA channel
+            #[non_exhaustive]
+            pub struct [<DmaChannel $num>] {}
+
+            impl crate::private::Sealed for [<DmaChannel $num>] {}
+
+            impl DmaChannel for [<DmaChannel $num>] {
+                type Channel = Channel<$num>;
+                type Rx = ChannelRxImpl<$num>;
+                type Tx = ChannelTxImpl<$num>;
+                type P = SuitablePeripheral<$num>;
             }
 
             impl ChannelCreator<$num> {
@@ -502,7 +524,7 @@ macro_rules! impl_channel {
                     self,
                     burst_mode: bool,
                     priority: DmaPriority,
-                ) -> crate::dma::Channel<'a, Channel<$num>, crate::Blocking> {
+                ) -> crate::dma::Channel<'a, [<DmaChannel $num>], crate::Blocking> {
                     let mut tx_impl = ChannelTxImpl {};
                     tx_impl.init(burst_mode, priority);
 
@@ -525,7 +547,7 @@ macro_rules! impl_channel {
                     self,
                     burst_mode: bool,
                     priority: DmaPriority,
-                ) -> crate::dma::Channel<'a, Channel<$num>, $crate::Async> {
+                ) -> crate::dma::Channel<'a, [<DmaChannel $num>], $crate::Async> {
                     let mut tx_impl = ChannelTxImpl {};
                     tx_impl.init(burst_mode, priority);
 
@@ -616,20 +638,23 @@ impl<'d> Dma<'d> {
 
 pub use m2m::*;
 mod m2m {
-    use embedded_dma::{ReadBuffer, WriteBuffer};
-
+    #[cfg(esp32s3)]
+    use crate::dma::DmaExtMemBKSize;
     use crate::dma::{
         dma_private::{DmaSupport, DmaSupportRx},
         Channel,
-        ChannelTypes,
+        ChannelRx,
         DescriptorChain,
+        DmaChannel,
         DmaDescriptor,
         DmaEligible,
         DmaError,
         DmaPeripheral,
         DmaTransferRx,
+        ReadBuffer,
         RxPrivate,
         TxPrivate,
+        WriteBuffer,
     };
 
     /// DMA Memory to Memory pseudo-Peripheral
@@ -639,7 +664,7 @@ mod m2m {
     /// to memory transfers.
     pub struct Mem2Mem<'d, C, MODE>
     where
-        C: ChannelTypes,
+        C: DmaChannel,
         MODE: crate::Mode,
     {
         channel: Channel<'d, C, MODE>,
@@ -650,23 +675,43 @@ mod m2m {
 
     impl<'d, C, MODE> Mem2Mem<'d, C, MODE>
     where
-        C: ChannelTypes,
+        C: DmaChannel,
         MODE: crate::Mode,
     {
         /// Create a new Mem2Mem instance.
         pub fn new(
-            mut channel: Channel<'d, C, MODE>,
+            channel: Channel<'d, C, MODE>,
             peripheral: impl DmaEligible,
             tx_descriptors: &'static mut [DmaDescriptor],
             rx_descriptors: &'static mut [DmaDescriptor],
-        ) -> Self {
-            channel.tx.init_channel();
-            channel.rx.init_channel();
-            Mem2Mem {
-                channel,
-                peripheral: peripheral.dma_peripheral(),
-                tx_chain: DescriptorChain::new(tx_descriptors),
-                rx_chain: DescriptorChain::new(rx_descriptors),
+        ) -> Result<Self, DmaError> {
+            unsafe {
+                Self::new_unsafe(
+                    channel,
+                    peripheral.dma_peripheral(),
+                    tx_descriptors,
+                    rx_descriptors,
+                    crate::dma::CHUNK_SIZE,
+                )
+            }
+        }
+
+        /// Create a new Mem2Mem instance with specific chunk size.
+        pub fn new_with_chunk_size(
+            channel: Channel<'d, C, MODE>,
+            peripheral: impl DmaEligible,
+            tx_descriptors: &'static mut [DmaDescriptor],
+            rx_descriptors: &'static mut [DmaDescriptor],
+            chunk_size: usize,
+        ) -> Result<Self, DmaError> {
+            unsafe {
+                Self::new_unsafe(
+                    channel,
+                    peripheral.dma_peripheral(),
+                    tx_descriptors,
+                    rx_descriptors,
+                    chunk_size,
+                )
             }
         }
 
@@ -681,15 +726,22 @@ mod m2m {
             peripheral: DmaPeripheral,
             tx_descriptors: &'static mut [DmaDescriptor],
             rx_descriptors: &'static mut [DmaDescriptor],
-        ) -> Self {
+            chunk_size: usize,
+        ) -> Result<Self, DmaError> {
+            if !(1..=4092).contains(&chunk_size) {
+                return Err(DmaError::InvalidChunkSize);
+            }
+            if tx_descriptors.is_empty() || rx_descriptors.is_empty() {
+                return Err(DmaError::OutOfDescriptors);
+            }
             channel.tx.init_channel();
             channel.rx.init_channel();
-            Mem2Mem {
+            Ok(Mem2Mem {
                 channel,
                 peripheral,
-                tx_chain: DescriptorChain::new(tx_descriptors),
-                rx_chain: DescriptorChain::new(rx_descriptors),
-            }
+                tx_chain: DescriptorChain::new_with_chunk_size(tx_descriptors, chunk_size),
+                rx_chain: DescriptorChain::new_with_chunk_size(rx_descriptors, chunk_size),
+            })
         }
 
         /// Start a memory to memory transfer.
@@ -697,10 +749,10 @@ mod m2m {
             &mut self,
             tx_buffer: &'t TXBUF,
             rx_buffer: &'t mut RXBUF,
-        ) -> Result<DmaTransferRx<Self>, DmaError>
+        ) -> Result<DmaTransferRx<'_, Self>, DmaError>
         where
-            TXBUF: ReadBuffer<Word = u8>,
-            RXBUF: WriteBuffer<Word = u8>,
+            TXBUF: ReadBuffer,
+            RXBUF: WriteBuffer,
         {
             let (tx_ptr, tx_len) = unsafe { tx_buffer.read_buffer() };
             let (rx_ptr, rx_len) = unsafe { rx_buffer.write_buffer() };
@@ -715,25 +767,30 @@ mod m2m {
                     .prepare_transfer_without_start(self.peripheral, &self.rx_chain)?;
                 self.channel.rx.set_mem2mem_mode(true);
             }
+            #[cfg(esp32s3)]
+            {
+                let align = match unsafe { crate::soc::cache_get_dcache_line_size() } {
+                    16 => DmaExtMemBKSize::Size16,
+                    32 => DmaExtMemBKSize::Size32,
+                    64 => DmaExtMemBKSize::Size64,
+                    _ => panic!("unsupported cache line size"),
+                };
+                if crate::soc::is_valid_psram_address(tx_ptr as u32) {
+                    self.channel.tx.set_ext_mem_block_size(align);
+                }
+                if crate::soc::is_valid_psram_address(rx_ptr as u32) {
+                    self.channel.rx.set_ext_mem_block_size(align);
+                }
+            }
             self.channel.tx.start_transfer()?;
             self.channel.rx.start_transfer()?;
             Ok(DmaTransferRx::new(self))
         }
     }
 
-    impl<'d, C, MODE> Drop for Mem2Mem<'d, C, MODE>
-    where
-        C: ChannelTypes,
-        MODE: crate::Mode,
-    {
-        fn drop(&mut self) {
-            self.channel.rx.set_mem2mem_mode(false);
-        }
-    }
-
     impl<'d, C, MODE> DmaSupport for Mem2Mem<'d, C, MODE>
     where
-        C: ChannelTypes,
+        C: DmaChannel,
         MODE: crate::Mode,
     {
         fn peripheral_wait_dma(&mut self, _is_tx: bool, _is_rx: bool) {
@@ -747,10 +804,10 @@ mod m2m {
 
     impl<'d, C, MODE> DmaSupportRx for Mem2Mem<'d, C, MODE>
     where
-        C: ChannelTypes,
+        C: DmaChannel,
         MODE: crate::Mode,
     {
-        type RX = C::Rx<'d>;
+        type RX = ChannelRx<'d, C>;
 
         fn rx(&mut self) -> &mut Self::RX {
             &mut self.channel.rx

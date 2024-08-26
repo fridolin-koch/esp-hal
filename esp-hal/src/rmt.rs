@@ -1,11 +1,13 @@
 //! # Remote Control Peripheral (RMT)
 //!
 //! ## Overview
-//! The RMT (Remote Control Transceiver) peripheral was designed to act as an
-//! infrared transceiver. However, due to the flexibility of its data format,
-//! RMT can be extended to a versatile and general-purpose transceiver,
-//! transmitting or receiving many other types of signals.
-//!
+//! The RMT (Remote Control) module is designed to send and receive infrared
+//! remote control signals. A variety of remote control protocols can be
+//! encoded/decoded via software based on the RMT module. The RMT module
+//! converts pulse codes stored in the module’s built-in RAM into output
+//! signals, or converts input signals into pulse codes and stores them in RAM.
+//! In addition, the RMT module optionally modulates its output signals with a
+//! carrier wave, or optionally demodulates and filters its input signals.
 //!
 //! Typically, the RMT peripheral can be used in the following scenarios:
 //! - Transmit or receive infrared signals, with any IR protocols, e.g., NEC
@@ -15,7 +17,7 @@
 //! - Modulate the carrier to the output signal or demodulate the carrier from
 //!   the input signal
 //!
-//! ## Channels
+//! ### Channels
 //! There are
 #![cfg_attr(
     esp32,
@@ -36,10 +38,14 @@
 #![doc = "  "]
 //! For more information, please refer to the
 #![doc = concat!("[ESP-IDF documentation](https://docs.espressif.com/projects/esp-idf/en/latest/", crate::soc::chip!(), "/api-reference/peripherals/rmt.html)")]
+//! ## Configuration
+//! Each TX/RX channel has the same functionality controlled by a dedicated set
+//! of registers and is able to independently transmit or receive data. TX
+//! channels are indicated by n which is used as a placeholder for the channel
+//! number, and by m for RX channels.
+//!
 //! ## Examples
-//!
 //! ### Initialization
-//!
 //! ```rust, no_run
 #![doc = crate::before_snippet!()]
 //! # use esp_hal::peripherals::Peripherals;
@@ -52,7 +58,7 @@
 //! # let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 #![cfg_attr(esp32h2, doc = "let freq = 32.MHz();")]
 #![cfg_attr(not(esp32h2), doc = "let freq = 80.MHz();")]
-//! let rmt = Rmt::new(peripherals.RMT, freq, &clocks, None).unwrap();
+//! let rmt = Rmt::new(peripherals.RMT, freq, &clocks).unwrap();
 //! let mut channel = rmt
 //!     .channel0
 //!     .configure(
@@ -73,8 +79,6 @@
 //! (on ESP32 and ESP32-S2 you cannot specify a base frequency other than 80
 //! MHz)
 
-#![warn(missing_docs)]
-
 use core::marker::PhantomData;
 
 use fugit::HertzU32;
@@ -87,6 +91,7 @@ use crate::{
     rmt::private::CreateInstance,
     soc::constants,
     system::PeripheralClockControl,
+    InterruptConfigurable,
 };
 
 /// Errors
@@ -211,8 +216,7 @@ where
     pub(crate) fn new_internal(
         peripheral: impl Peripheral<P = crate::peripherals::RMT> + 'd,
         frequency: HertzU32,
-        _clocks: &Clocks,
-        interrupt: Option<InterruptHandler>,
+        _clocks: &Clocks<'d>,
     ) -> Result<Self, Error> {
         let me = Rmt::create(peripheral);
 
@@ -221,6 +225,7 @@ where
             return Err(Error::UnreachableTargetFrequency);
         }
 
+        PeripheralClockControl::reset(crate::system::Peripheral::Rmt);
         PeripheralClockControl::enable(crate::system::Peripheral::Rmt);
 
         #[cfg(not(any(esp32, esp32s2)))]
@@ -229,22 +234,19 @@ where
         #[cfg(any(esp32, esp32s2))]
         self::chip_specific::configure_clock();
 
-        if let Some(interrupt) = interrupt {
-            unsafe {
-                crate::interrupt::bind_interrupt(
-                    crate::peripherals::Interrupt::RMT,
-                    interrupt.handler(),
-                );
-                crate::interrupt::enable(crate::peripherals::Interrupt::RMT, interrupt.priority())
-                    .unwrap();
-            }
-        }
-
         Ok(me)
     }
 
+    pub(crate) fn internal_set_interrupt_handler(&mut self, handler: InterruptHandler) {
+        unsafe {
+            crate::interrupt::bind_interrupt(crate::peripherals::Interrupt::RMT, handler.handler());
+            crate::interrupt::enable(crate::peripherals::Interrupt::RMT, handler.priority())
+                .unwrap();
+        }
+    }
+
     #[cfg(not(any(esp32, esp32s2)))]
-    fn configure_clock(&self, frequency: HertzU32, _clocks: &Clocks) -> Result<(), Error> {
+    fn configure_clock(&self, frequency: HertzU32, _clocks: &Clocks<'d>) -> Result<(), Error> {
         let src_clock = crate::soc::constants::RMT_CLOCK_SRC_FREQ;
 
         if frequency > src_clock {
@@ -268,10 +270,17 @@ impl<'d> Rmt<'d, crate::Blocking> {
     pub fn new(
         peripheral: impl Peripheral<P = crate::peripherals::RMT> + 'd,
         frequency: HertzU32,
-        _clocks: &Clocks,
-        interrupt: Option<InterruptHandler>,
+        _clocks: &Clocks<'d>,
     ) -> Result<Self, Error> {
-        Self::new_internal(peripheral, frequency, _clocks, interrupt)
+        Self::new_internal(peripheral, frequency, _clocks)
+    }
+}
+
+impl<'d> crate::private::Sealed for Rmt<'d, crate::Blocking> {}
+
+impl<'d> InterruptConfigurable for Rmt<'d, crate::Blocking> {
+    fn set_interrupt_handler(&mut self, handler: crate::interrupt::InterruptHandler) {
+        self.internal_set_interrupt_handler(handler);
     }
 }
 
@@ -281,14 +290,11 @@ impl<'d> Rmt<'d, crate::Async> {
     pub fn new_async(
         peripheral: impl Peripheral<P = crate::peripherals::RMT> + 'd,
         frequency: HertzU32,
-        _clocks: &Clocks,
+        _clocks: &Clocks<'d>,
     ) -> Result<Self, Error> {
-        Self::new_internal(
-            peripheral,
-            frequency,
-            _clocks,
-            Some(asynch::async_interrupt_handler),
-        )
+        let mut this = Self::new_internal(peripheral, frequency, _clocks)?;
+        this.internal_set_interrupt_handler(asynch::async_interrupt_handler);
+        Ok(this)
     }
 }
 
@@ -675,15 +681,18 @@ mod impl_for_chip {
     use crate::peripheral::{Peripheral, PeripheralRef};
 
     /// RMT Instance
-    #[allow(missing_docs)]
     pub struct Rmt<'d, M>
     where
         M: crate::Mode,
     {
         _peripheral: PeripheralRef<'d, crate::peripherals::RMT>,
+        /// RMT Channel 0.
         pub channel0: ChannelCreator<M, 0>,
+        /// RMT Channel 1.
         pub channel1: ChannelCreator<M, 1>,
+        /// RMT Channel 2.
         pub channel2: ChannelCreator<M, 2>,
+        /// RMT Channel 3.
         pub channel3: ChannelCreator<M, 3>,
         phantom: PhantomData<M>,
     }
@@ -743,19 +752,26 @@ mod impl_for_chip {
     use crate::peripheral::{Peripheral, PeripheralRef};
 
     /// RMT Instance
-    #[allow(missing_docs)]
     pub struct Rmt<'d, M>
     where
         M: crate::Mode,
     {
         _peripheral: PeripheralRef<'d, crate::peripherals::RMT>,
+        /// RMT Channel 0.
         pub channel0: ChannelCreator<M, 0>,
+        /// RMT Channel 1.
         pub channel1: ChannelCreator<M, 1>,
+        /// RMT Channel 2.
         pub channel2: ChannelCreator<M, 2>,
+        /// RMT Channel 3.
         pub channel3: ChannelCreator<M, 3>,
+        /// RMT Channel 4.
         pub channel4: ChannelCreator<M, 4>,
+        /// RMT Channel 5.
         pub channel5: ChannelCreator<M, 5>,
+        /// RMT Channel 6.
         pub channel6: ChannelCreator<M, 6>,
+        /// RMT Channel 7.
         pub channel7: ChannelCreator<M, 7>,
         phantom: PhantomData<M>,
     }
@@ -851,15 +867,18 @@ mod impl_for_chip {
     use crate::peripheral::{Peripheral, PeripheralRef};
 
     /// RMT Instance
-    #[allow(missing_docs)]
     pub struct Rmt<'d, M>
     where
         M: crate::Mode,
     {
         _peripheral: PeripheralRef<'d, crate::peripherals::RMT>,
+        /// RMT Channel 0.
         pub channel0: ChannelCreator<M, 0>,
+        /// RMT Channel 1.
         pub channel1: ChannelCreator<M, 1>,
+        /// RMT Channel 2.
         pub channel2: ChannelCreator<M, 2>,
+        /// RMT Channel 3.
         pub channel3: ChannelCreator<M, 3>,
         phantom: PhantomData<M>,
     }
@@ -927,19 +946,26 @@ mod impl_for_chip {
     use crate::peripheral::{Peripheral, PeripheralRef};
 
     /// RMT Instance
-    #[allow(missing_docs)]
     pub struct Rmt<'d, M>
     where
         M: crate::Mode,
     {
         _peripheral: PeripheralRef<'d, crate::peripherals::RMT>,
+        /// RMT Channel 0.
         pub channel0: ChannelCreator<M, 0>,
+        /// RMT Channel 1.
         pub channel1: ChannelCreator<M, 1>,
+        /// RMT Channel 2.
         pub channel2: ChannelCreator<M, 2>,
+        /// RMT Channel 3.
         pub channel3: ChannelCreator<M, 3>,
+        /// RMT Channel 4.
         pub channel4: ChannelCreator<M, 4>,
+        /// RMT Channel 5.
         pub channel5: ChannelCreator<M, 5>,
+        /// RMT Channel 6.
         pub channel6: ChannelCreator<M, 6>,
+        /// RMT Channel 7.
         pub channel7: ChannelCreator<M, 7>,
         phantom: PhantomData<M>,
     }
@@ -1027,7 +1053,7 @@ pub trait TxChannel: private::TxChannelInternal<crate::Blocking> {
     /// This returns a [`SingleShotTxTransaction`] which can be used to wait for
     /// the transaction to complete and get back the channel for further
     /// use.
-    fn transmit<T: Into<u32> + Copy>(self, data: &[T]) -> SingleShotTxTransaction<Self, T>
+    fn transmit<T: Into<u32> + Copy>(self, data: &[T]) -> SingleShotTxTransaction<'_, Self, T>
     where
         Self: Sized,
     {
@@ -1148,7 +1174,10 @@ pub trait RxChannel: private::RxChannelInternal<crate::Blocking> {
     /// This returns a [RxTransaction] which can be used to wait for receive to
     /// complete and get back the channel for further use.
     /// The length of the received data cannot exceed the allocated RMT RAM.
-    fn receive<T: From<u32> + Copy>(self, data: &mut [T]) -> Result<RxTransaction<Self, T>, Error>
+    fn receive<T: From<u32> + Copy>(
+        self,
+        data: &mut [T],
+    ) -> Result<RxTransaction<'_, Self, T>, Error>
     where
         Self: Sized,
     {
@@ -1183,6 +1212,7 @@ pub mod asynch {
     #[cfg(not(any(esp32, esp32s3)))]
     const NUM_CHANNELS: usize = 4;
 
+    #[allow(clippy::declare_interior_mutable_const)]
     const INIT: AtomicWaker = AtomicWaker::new();
     static WAKER: [AtomicWaker; NUM_CHANNELS] = [INIT; NUM_CHANNELS];
 

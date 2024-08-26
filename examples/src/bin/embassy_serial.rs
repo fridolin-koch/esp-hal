@@ -3,11 +3,11 @@
 //! This is an example of running the embassy executor and asynchronously
 //! writing to and reading from uart
 
+//% CHIPS: esp32 esp32c2 esp32c3 esp32c6 esp32h2 esp32s2 esp32s3
+//% FEATURES: async embassy embassy-generic-timers
+
 #![no_std]
 #![no_main]
-
-//% CHIPS: esp32 esp32c2 esp32c3 esp32c6 esp32h2 esp32s2 esp32s3
-//% FEATURES: async embassy embassy-time-timg0 embassy-generic-timers
 
 use embassy_executor::Spawner;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, signal::Signal};
@@ -16,7 +16,6 @@ use esp_hal::{
     clock::ClockControl,
     gpio::Io,
     peripherals::{Peripherals, UART0},
-    prelude::*,
     system::SystemControl,
     timer::timg::TimerGroup,
     uart::{
@@ -78,15 +77,15 @@ async fn reader(
     }
 }
 
-#[main]
+#[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
     esp_println::println!("Init!");
     let peripherals = Peripherals::take();
     let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let timg0 = TimerGroup::new_async(peripherals.TIMG0, &clocks);
-    esp_hal_embassy::init(&clocks, timg0);
+    let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
+    esp_hal_embassy::init(&clocks, timg0.timer0);
 
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
@@ -106,8 +105,7 @@ async fn main(spawner: Spawner) {
     #[cfg(feature = "esp32s3")]
     let (tx_pin, rx_pin) = (io.pins.gpio43, io.pins.gpio44);
 
-    let config = Config::default();
-    config.rx_fifo_full_threshold(READ_BUF_SIZE as u16);
+    let config = Config::default().rx_fifo_full_threshold(READ_BUF_SIZE as u16);
 
     let mut uart0 =
         Uart::new_async_with_config(peripherals.UART0, config, &clocks, tx_pin, rx_pin).unwrap();

@@ -4,6 +4,10 @@
 //! check `lp_core_uart` example in the `esp-lp-hal.
 //!
 //! Make sure to first compile the `esp-lp-hal/examples/uart.rs` example
+//!
+//! The following wiring is assumed:
+//! - TX => GPIO5
+//! - RX => GPIO4
 
 //% CHIPS: esp32c6
 
@@ -39,7 +43,6 @@ fn main() -> ! {
         peripherals.UART1,
         Config::default(),
         &clocks,
-        None,
         io.pins.gpio6,
         io.pins.gpio7,
     )

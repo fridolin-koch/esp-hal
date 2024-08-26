@@ -1,17 +1,17 @@
 //! Embassy I2C
 //!
-//! Folowing pins are used:
-//! SDA    GPIO4
-//! SCL    GPIO5
-//!
 //! Depending on your target and the board you are using you have to change the
 //! pins.
 //!
 //! This is an example of running the embassy executor with IC2. It uses an
 //! LIS3DH to get accelerometer data.
+//!
+//! Folowing pins are used:
+//! - SDA => GPIO4
+//! - SCL => GPIO5
 
 //% CHIPS: esp32 esp32c2 esp32c3 esp32c6 esp32h2 esp32s2 esp32s3
-//% FEATURES: async embassy embassy-time-timg0 embassy-generic-timers
+//% FEATURES: async embassy embassy-generic-timers
 
 #![no_std]
 #![no_main]
@@ -30,14 +30,14 @@ use esp_hal::{
 };
 use lis3dh_async::{Lis3dh, Range, SlaveAddr};
 
-#[main]
+#[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) {
     let peripherals = Peripherals::take();
     let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let timg0 = TimerGroup::new_async(peripherals.TIMG0, &clocks);
-    esp_hal_embassy::init(&clocks, timg0);
+    let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
+    esp_hal_embassy::init(&clocks, timg0.timer0);
 
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 

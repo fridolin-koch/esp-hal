@@ -1,17 +1,19 @@
 //! # Camera - Master or Slave Mode
 //!
 //! ## Overview
-//! The LCD_CAM peripheral supports receiving 8/16 bit DVP signals in either
-//! master or slave mode. In master mode, the peripheral provides the master
-//! clock to drive the camera, in slave mode it does not. This is configured
-//! with the `with_master_clock` method on the camera driver. The driver (due to
-//! the peripheral) mandates DMA (Direct Memory Access) for efficient data
-//! transfer.
+//! The camera module is designed to receive parallel video data signals, and
+//! its bus supports DVP 8-/16-bit modes in master or slave mode.
+//!
+//! ## Configuration
+//! In master mode, the peripheral provides the master clock to drive the
+//! camera, in slave mode it does not. This is configured with the
+//! `with_master_clock` method on the camera driver. The driver (due to the
+//! peripheral) mandates DMA (Direct Memory Access) for efficient data transfer.
 //!
 //! ## Examples
+//! ## Master Mode
 //! Following code shows how to receive some bytes from an 8 bit DVP stream in
 //! master mode.
-//!
 //! ```rust, no_run
 #![doc = crate::before_snippet!()]
 //! # use esp_hal::gpio::Io;
@@ -62,9 +64,6 @@
 //! # }
 //! ```
 
-use core::mem::size_of;
-
-use embedded_dma::WriteBuffer;
 use fugit::HertzU32;
 
 use crate::{
@@ -72,18 +71,16 @@ use crate::{
     dma::{
         dma_private::{DmaSupport, DmaSupportRx},
         ChannelRx,
-        ChannelTypes,
         DescriptorChain,
+        DmaChannel,
         DmaDescriptor,
         DmaError,
         DmaPeripheral,
         DmaTransferRx,
         DmaTransferRxCircular,
         LcdCamPeripheral,
-        RegisterAccess,
-        Rx,
-        RxChannel,
         RxPrivate,
+        WriteBuffer,
     },
     gpio::{InputPin, InputSignal, OutputPin, OutputSignal},
     lcd_cam::{cam::private::RxPins, private::calculate_clkm, BitOrder, ByteOrder},
@@ -105,41 +102,51 @@ pub enum EofMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum VsyncFilterThreshold {
+    /// Requires 1 valid VSYNC pulse to trigger synchronization.
     One,
+    /// Requires 2 valid VSYNC pulse to trigger synchronization.
     Two,
+    /// Requires 3 valid VSYNC pulse to trigger synchronization.
     Three,
+    /// Requires 4 valid VSYNC pulse to trigger synchronization.
     Four,
+    /// Requires 5 valid VSYNC pulse to trigger synchronization.
     Five,
+    /// Requires 6 valid VSYNC pulse to trigger synchronization.
     Six,
+    /// Requires 7 valid VSYNC pulse to trigger synchronization.
     Seven,
+    /// Requires 8 valid VSYNC pulse to trigger synchronization.
     Eight,
 }
 
+/// Represents the camera interface.
 pub struct Cam<'d> {
+    /// The LCD_CAM peripheral reference for managing the camera functionality.
     pub(crate) lcd_cam: PeripheralRef<'d, LCD_CAM>,
 }
 
-pub struct Camera<'d, RX> {
+/// Represents the camera interface with DMA support.
+pub struct Camera<'d, CH: DmaChannel> {
     lcd_cam: PeripheralRef<'d, LCD_CAM>,
-    rx_channel: RX,
+    rx_channel: ChannelRx<'d, CH>,
     rx_chain: DescriptorChain,
     // 1 or 2
     bus_width: usize,
 }
 
-impl<'d, T, R> Camera<'d, ChannelRx<'d, T, R>>
+impl<'d, CH: DmaChannel> Camera<'d, CH>
 where
-    T: RxChannel<R>,
-    R: ChannelTypes + RegisterAccess,
-    R::P: LcdCamPeripheral,
+    CH::P: LcdCamPeripheral,
 {
+    /// Creates a new `Camera` instance with DMA support.
     pub fn new<P: RxPins>(
         cam: Cam<'d>,
-        mut channel: ChannelRx<'d, T, R>,
+        mut channel: ChannelRx<'d, CH>,
         descriptors: &'static mut [DmaDescriptor],
         _pins: P,
         frequency: HertzU32,
-        clocks: &Clocks,
+        clocks: &Clocks<'d>,
     ) -> Self {
         let lcd_cam = cam.lcd_cam;
 
@@ -211,7 +218,7 @@ where
     }
 }
 
-impl<'d, RX: Rx> DmaSupport for Camera<'d, RX> {
+impl<'d, CH: DmaChannel> DmaSupport for Camera<'d, CH> {
     fn peripheral_wait_dma(&mut self, _is_tx: bool, _is_rx: bool) {
         loop {
             // Wait for IN_SUC_EOF (i.e. VSYNC)
@@ -236,8 +243,8 @@ impl<'d, RX: Rx> DmaSupport for Camera<'d, RX> {
     }
 }
 
-impl<'d, RX: Rx> DmaSupportRx for Camera<'d, RX> {
-    type RX = RX;
+impl<'d, CH: DmaChannel> DmaSupportRx for Camera<'d, CH> {
+    type RX = ChannelRx<'d, CH>;
 
     fn rx(&mut self) -> &mut Self::RX {
         &mut self.rx_channel
@@ -248,7 +255,8 @@ impl<'d, RX: Rx> DmaSupportRx for Camera<'d, RX> {
     }
 }
 
-impl<'d, RX: Rx> Camera<'d, RX> {
+impl<'d, CH: DmaChannel> Camera<'d, CH> {
+    /// Configures the byte order for the camera data.
     pub fn set_byte_order(&mut self, byte_order: ByteOrder) -> &mut Self {
         self.lcd_cam
             .cam_ctrl()
@@ -256,6 +264,7 @@ impl<'d, RX: Rx> Camera<'d, RX> {
         self
     }
 
+    /// Configures the bit order for the camera data.
     pub fn set_bit_order(&mut self, bit_order: BitOrder) -> &mut Self {
         self.lcd_cam
             .cam_ctrl()
@@ -263,6 +272,7 @@ impl<'d, RX: Rx> Camera<'d, RX> {
         self
     }
 
+    /// Configures the VSYNC filter threshold.
     pub fn set_vsync_filter(&mut self, threshold: Option<VsyncFilterThreshold>) -> &mut Self {
         if let Some(threshold) = threshold {
             let value = match threshold {
@@ -290,6 +300,7 @@ impl<'d, RX: Rx> Camera<'d, RX> {
         self
     }
 
+    /// Configures the master clock (MCLK) pin for the camera interface.
     pub fn with_master_clock<MCLK: OutputPin>(self, mclk: impl Peripheral<P = MCLK> + 'd) -> Self {
         crate::into_ref!(mclk);
         mclk.set_to_push_pull_output(crate::private::Internal);
@@ -297,6 +308,7 @@ impl<'d, RX: Rx> Camera<'d, RX> {
         self
     }
 
+    /// Configures the pixel clock (PCLK) pin for the camera interface.
     pub fn with_pixel_clock<PCLK: InputPin>(self, pclk: impl Peripheral<P = PCLK> + 'd) -> Self {
         crate::into_ref!(pclk);
 
@@ -306,6 +318,8 @@ impl<'d, RX: Rx> Camera<'d, RX> {
         self
     }
 
+    /// Configures the control pins for the camera interface (VSYNC and
+    /// HENABLE).
     pub fn with_ctrl_pins<VSYNC: InputPin, HENABLE: InputPin>(
         self,
         vsync: impl Peripheral<P = VSYNC> + 'd,
@@ -326,6 +340,8 @@ impl<'d, RX: Rx> Camera<'d, RX> {
         self
     }
 
+    /// Configures the control pins for the camera interface (VSYNC, HSYNC, and
+    /// HENABLE) with DE (data enable).
     pub fn with_ctrl_pins_and_de<VSYNC: InputPin, HSYNC: InputPin, HENABLE: InputPin>(
         self,
         vsync: impl Peripheral<P = VSYNC> + 'd,
@@ -383,21 +399,21 @@ impl<'d, RX: Rx> Camera<'d, RX> {
     ) -> Result<(), DmaError> {
         let (ptr, len) = unsafe { buf.write_buffer() };
 
-        assert_eq!(self.bus_width, size_of::<RXBUF::Word>());
+        assert!(len % self.bus_width == 0);
 
         unsafe {
-            self.rx_chain
-                .fill_for_rx(circular, ptr as _, len * size_of::<RXBUF::Word>())?;
+            self.rx_chain.fill_for_rx(circular, ptr as _, len)?;
             self.rx_channel
                 .prepare_transfer_without_start(DmaPeripheral::LcdCam, &self.rx_chain)?;
         }
         self.rx_channel.start_transfer()
     }
 
+    /// Starts a DMA transfer to receive data from the camera peripheral.
     pub fn read_dma<'t, RXBUF: WriteBuffer>(
         &'t mut self,
         buf: &'t mut RXBUF,
-    ) -> Result<DmaTransferRx<Self>, DmaError> {
+    ) -> Result<DmaTransferRx<'_, Self>, DmaError> {
         self.reset_unit_and_fifo();
         // Start DMA to receive incoming transfer.
         self.start_dma(false, buf)?;
@@ -406,10 +422,12 @@ impl<'d, RX: Rx> Camera<'d, RX> {
         Ok(DmaTransferRx::new(self))
     }
 
+    /// Starts a circular DMA transfer to receive data from the camera
+    /// peripheral.
     pub fn read_dma_circular<'t, RXBUF: WriteBuffer>(
         &'t mut self,
         buf: &'t mut RXBUF,
-    ) -> Result<DmaTransferRxCircular<Self>, DmaError> {
+    ) -> Result<DmaTransferRxCircular<'_, Self>, DmaError> {
         self.reset_unit_and_fifo();
         // Start DMA to receive incoming transfer.
         self.start_dma(true, buf)?;
@@ -419,12 +437,16 @@ impl<'d, RX: Rx> Camera<'d, RX> {
     }
 }
 
+/// Represents an 8-bit wide camera data bus.
+/// Is used to configure the camera interface to receive 8-bit data.
 pub struct RxEightBits {
     _pins: (),
 }
 
 impl RxEightBits {
     #[allow(clippy::too_many_arguments)]
+    /// Creates a new instance of `RxEightBits`, configuring the specified pins
+    /// as the 8-bit data bus.
     pub fn new<'d, P0, P1, P2, P3, P4, P5, P6, P7>(
         pin_0: impl Peripheral<P = P0> + 'd,
         pin_1: impl Peripheral<P = P1> + 'd,
@@ -479,12 +501,16 @@ impl RxPins for RxEightBits {
     const BUS_WIDTH: usize = 1;
 }
 
+/// Represents a 16-bit wide camera data bus.
+/// Is used to configure the camera interface to receive 16-bit data.
 pub struct RxSixteenBits {
     _pins: (),
 }
 
 impl RxSixteenBits {
     #[allow(clippy::too_many_arguments)]
+    /// Creates a new instance of `RxSixteenBits`, configuring the specified
+    /// pins as the 16-bit data bus.
     pub fn new<'d, P0, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12, P13, P14, P15>(
         pin_0: impl Peripheral<P = P0> + 'd,
         pin_1: impl Peripheral<P = P1> + 'd,

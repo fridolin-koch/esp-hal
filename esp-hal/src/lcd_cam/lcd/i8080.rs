@@ -6,6 +6,7 @@
 //! efficient data transfer.
 //!
 //! ## Examples
+//! ### MIPI-DSI Display
 //! Following code show how to send a command to a MIPI-DSI display over I8080
 //! protocol.
 //!
@@ -56,26 +57,25 @@
 //! # }
 //! ```
 
-use core::{fmt::Formatter, mem::size_of};
+use core::{fmt::Formatter, marker::PhantomData, mem::size_of};
 
-use embedded_dma::ReadBuffer;
 use fugit::HertzU32;
 
+#[cfg(feature = "async")]
+use crate::lcd_cam::asynch::LcdDoneFuture;
 use crate::{
     clock::Clocks,
     dma::{
         dma_private::{DmaSupport, DmaSupportTx},
         ChannelTx,
-        ChannelTypes,
         DescriptorChain,
+        DmaChannel,
         DmaDescriptor,
         DmaError,
         DmaPeripheral,
         DmaTransferTx,
         LcdCamPeripheral,
-        RegisterAccess,
-        Tx,
-        TxChannel,
+        ReadBuffer,
         TxPrivate,
     },
     gpio::{OutputPin, OutputSignal},
@@ -88,30 +88,32 @@ use crate::{
     },
     peripheral::{Peripheral, PeripheralRef},
     peripherals::LCD_CAM,
+    Mode,
 };
 
-pub struct I8080<'d, TX, P> {
+/// Represents the I8080 LCD interface.
+pub struct I8080<'d, CH: DmaChannel, P, DM: Mode> {
     lcd_cam: PeripheralRef<'d, LCD_CAM>,
-    tx_channel: TX,
+    tx_channel: ChannelTx<'d, CH>,
     tx_chain: DescriptorChain,
     _pins: P,
+    _phantom: PhantomData<DM>,
 }
 
-impl<'d, T, R, P: TxPins> I8080<'d, ChannelTx<'d, T, R>, P>
+impl<'d, CH: DmaChannel, P: TxPins, DM: Mode> I8080<'d, CH, P, DM>
 where
-    T: TxChannel<R>,
-    R: ChannelTypes + RegisterAccess,
-    R::P: LcdCamPeripheral,
+    CH::P: LcdCamPeripheral,
     P::Word: Into<u16>,
 {
+    /// Creates a new instance of the I8080 LCD interface.
     pub fn new(
-        lcd: Lcd<'d>,
-        mut channel: ChannelTx<'d, T, R>,
+        lcd: Lcd<'d, DM>,
+        mut channel: ChannelTx<'d, CH>,
         descriptors: &'static mut [DmaDescriptor],
         mut pins: P,
         frequency: HertzU32,
         config: Config,
-        clocks: &Clocks,
+        clocks: &Clocks<'d>,
     ) -> Self {
         let is_2byte_mode = size_of::<P::Word>() == 2;
 
@@ -253,11 +255,12 @@ where
             tx_channel: channel,
             tx_chain: DescriptorChain::new(descriptors),
             _pins: pins,
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<'d, TX: Tx, P: TxPins> DmaSupport for I8080<'d, TX, P> {
+impl<'d, CH: DmaChannel, P: TxPins, DM: Mode> DmaSupport for I8080<'d, CH, P, DM> {
     fn peripheral_wait_dma(&mut self, _is_tx: bool, _is_rx: bool) {
         let lcd_user = self.lcd_cam.lcd_user();
         // Wait until LCD_START is cleared by hardware.
@@ -270,8 +273,8 @@ impl<'d, TX: Tx, P: TxPins> DmaSupport for I8080<'d, TX, P> {
     }
 }
 
-impl<'d, TX: Tx, P: TxPins> DmaSupportTx for I8080<'d, TX, P> {
-    type TX = TX;
+impl<'d, CH: DmaChannel, P: TxPins, DM: Mode> DmaSupportTx for I8080<'d, CH, P, DM> {
+    type TX = ChannelTx<'d, CH>;
 
     fn tx(&mut self) -> &mut Self::TX {
         &mut self.tx_channel
@@ -282,10 +285,11 @@ impl<'d, TX: Tx, P: TxPins> DmaSupportTx for I8080<'d, TX, P> {
     }
 }
 
-impl<'d, TX: Tx, P: TxPins> I8080<'d, TX, P>
+impl<'d, CH: DmaChannel, P: TxPins, DM: Mode> I8080<'d, CH, P, DM>
 where
     P::Word: Into<u16>,
 {
+    /// Configures the byte order for data transmission.
     pub fn set_byte_order(&mut self, byte_order: ByteOrder) -> &mut Self {
         let is_inverted = byte_order != ByteOrder::default();
         self.lcd_cam.lcd_user().modify(|_, w| {
@@ -298,6 +302,7 @@ where
         self
     }
 
+    /// Configures the bit order for data transmission.
     pub fn set_bit_order(&mut self, bit_order: BitOrder) -> &mut Self {
         self.lcd_cam
             .lcd_user()
@@ -305,6 +310,7 @@ where
         self
     }
 
+    /// Associates a CS pin with the I8080 interface.
     pub fn with_cs<CS: OutputPin>(self, cs: impl Peripheral<P = CS> + 'd) -> Self {
         crate::into_ref!(cs);
         cs.set_to_push_pull_output(crate::private::Internal);
@@ -313,6 +319,7 @@ where
         self
     }
 
+    /// Configures the control pins for the I8080 interface.
     pub fn with_ctrl_pins<DC: OutputPin, WRX: OutputPin>(
         self,
         dc: impl Peripheral<P = DC> + 'd,
@@ -330,6 +337,7 @@ where
         self
     }
 
+    /// Sends a command and data to the LCD using the I8080 interface.
     pub fn send(
         &mut self,
         cmd: impl Into<Command<P::Word>>,
@@ -349,26 +357,56 @@ where
         Ok(())
     }
 
+    /// Sends a command and data to the LCD using DMA.
     pub fn send_dma<'t, TXBUF>(
         &'t mut self,
         cmd: impl Into<Command<P::Word>>,
         dummy: u8,
         data: &'t TXBUF,
-    ) -> Result<DmaTransferTx<Self>, DmaError>
+    ) -> Result<DmaTransferTx<'_, Self>, DmaError>
     where
-        TXBUF: ReadBuffer<Word = P::Word>,
+        TXBUF: ReadBuffer,
     {
         let (ptr, len) = unsafe { data.read_buffer() };
 
         self.setup_send(cmd.into(), dummy);
-        self.start_write_bytes_dma(ptr as _, len * size_of::<P::Word>())?;
+        self.start_write_bytes_dma(ptr as _, len)?;
         self.start_send();
 
         Ok(DmaTransferTx::new(self))
     }
 }
 
-impl<'d, TX: Tx, P> I8080<'d, TX, P> {
+#[cfg(feature = "async")]
+impl<'d, CH: DmaChannel, P: TxPins> I8080<'d, CH, P, crate::Async>
+where
+    P::Word: Into<u16>,
+{
+    /// Asynchronously sends a command and data to the LCD using DMA.
+    pub async fn send_dma_async<'t, TXBUF>(
+        &'t mut self,
+        cmd: impl Into<Command<P::Word>>,
+        dummy: u8,
+        data: &'t TXBUF,
+    ) -> Result<(), DmaError>
+    where
+        TXBUF: ReadBuffer,
+    {
+        let (ptr, len) = unsafe { data.read_buffer() };
+
+        self.setup_send(cmd.into(), dummy);
+        self.start_write_bytes_dma(ptr as _, len)?;
+        self.start_send();
+
+        LcdDoneFuture::new().await;
+        if self.tx_channel.has_error() {
+            return Err(DmaError::DescriptorError);
+        }
+        Ok(())
+    }
+}
+
+impl<'d, CH: DmaChannel, P, DM: Mode> I8080<'d, CH, P, DM> {
     fn setup_send<T: Copy + Into<u16>>(&mut self, cmd: Command<T>, dummy: u8) {
         // Reset LCD control unit and Async Tx FIFO
         self.lcd_cam
@@ -480,7 +518,7 @@ impl<'d, TX: Tx, P> I8080<'d, TX, P> {
     }
 }
 
-impl<'d, TX, P> core::fmt::Debug for I8080<'d, TX, P> {
+impl<'d, CH: DmaChannel, P, DM: Mode> core::fmt::Debug for I8080<'d, CH, P, DM> {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("I8080").finish()
     }
@@ -488,7 +526,9 @@ impl<'d, TX, P> core::fmt::Debug for I8080<'d, TX, P> {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+/// Configuration settings for the I8080 interface.
 pub struct Config {
+    /// Specifies the clock mode, including polarity and phase settings.
     pub clock_mode: ClockMode,
 
     /// Setup cycles expected, must be at least 1. (6 bits)
@@ -534,8 +574,11 @@ impl Default for Config {
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Command<T> {
+    /// Suppresses the command phase. No command is sent.
     None,
+    /// Sends a single-word command.
     One(T),
+    /// Sends a two-word command.
     Two(T, T),
 }
 
@@ -545,6 +588,8 @@ impl<T> From<T> for Command<T> {
     }
 }
 
+/// Represents a group of 8 output pins configured for 8-bit parallel data
+/// transmission.
 pub struct TxEightBits<'d, P0, P1, P2, P3, P4, P5, P6, P7> {
     pin_0: PeripheralRef<'d, P0>,
     pin_1: PeripheralRef<'d, P1>,
@@ -568,6 +613,7 @@ where
     P7: OutputPin,
 {
     #[allow(clippy::too_many_arguments)]
+    /// Creates a new `TxEightBits` instance with the provided output pins.
     pub fn new(
         pin_0: impl Peripheral<P = P0> + 'd,
         pin_1: impl Peripheral<P = P1> + 'd,
@@ -641,6 +687,8 @@ where
     }
 }
 
+/// Represents a group of 16 output pins configured for 16-bit parallel data
+/// transmission.
 pub struct TxSixteenBits<'d, P0, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12, P13, P14, P15> {
     pin_0: PeripheralRef<'d, P0>,
     pin_1: PeripheralRef<'d, P1>,
@@ -681,6 +729,7 @@ where
     P15: OutputPin,
 {
     #[allow(clippy::too_many_arguments)]
+    /// Creates a new `TxSixteenBits` instance with the provided output pins.
     pub fn new(
         pin_0: impl Peripheral<P = P0> + 'd,
         pin_1: impl Peripheral<P = P1> + 'd,

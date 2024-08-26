@@ -2,6 +2,10 @@
 //!
 //! You need to connect via the Serial/JTAG interface to see any output.
 //! Most dev-kits use a USB-UART-bridge - in that case you won't see any output.
+//!
+//! Windows Users: Flashing and then monitoring via espflash will result in any keypress freezing the application.
+//! Please use another serial monitor (e.g. `putty`) on Windows
+//! See https://github.com/esp-rs/espflash/issues/654
 
 //% CHIPS: esp32c3 esp32c6 esp32h2 esp32s3
 
@@ -33,7 +37,8 @@ fn main() -> ! {
 
     let delay = Delay::new(&clocks);
 
-    let mut usb_serial = UsbSerialJtag::new(peripherals.USB_DEVICE, Some(usb_device));
+    let mut usb_serial = UsbSerialJtag::new(peripherals.USB_DEVICE);
+    usb_serial.set_interrupt_handler(usb_device);
     usb_serial.listen_rx_packet_recv_interrupt();
 
     critical_section::with(|cs| USB_SERIAL.borrow_ref_mut(cs).replace(usb_serial));

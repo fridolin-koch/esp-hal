@@ -1,11 +1,24 @@
 //! # Analog to Digital Converter (ADC)
 //!
-//! The Analog to Digital Converter (ADC) is integrated on the chip, and is
-//! capable of measuring analog signals from specific analog I/O pins. One or
-//! more ADC units are available, depending on the device being used.
+//! ## Overview
+//! The ADC is integrated on the chip, and is capable of measuring analog
+//! signals from specific analog I/O pins. One or more ADC units are available,
+//! depending on the device being used.
 //!
-//! ## Example
+//! ## Configuration
+//! The ADC can be configured to measure analog signals from specific pins. The
+//! configuration includes the resolution of the ADC, the attenuation of the
+//! input signal, and the pins to be measured.
 //!
+//! Some targets also support ADC calibration via different schemes like
+//! basic calibration, curve fitting or linear interpolation. The calibration
+//! schemes can be used to improve the accuracy of the ADC readings.
+//!
+//! ## Usage
+//! The ADC driver implements the `embedded-hal@0.2.x` ADC traits.
+//!
+//! ## Examples
+//! #### Read an analog signal from a pin
 //! ```rust, no_run
 #![doc = crate::before_snippet!()]
 //! # use esp_hal::analog::adc::AdcConfig;
@@ -25,8 +38,8 @@
 )]
 //! let mut adc1_config = AdcConfig::new();
 //! let mut pin = adc1_config.enable_pin(analog_pin,
-//! Attenuation::Attenuation11dB); let mut adc1 = Adc::new(peripherals.ADC1,
-//! adc1_config);
+//!               Attenuation::Attenuation11dB);
+//! let mut adc1 = Adc::new(peripherals.ADC1, adc1_config);
 //!
 //! let mut delay = Delay::new(&clocks);
 //!
@@ -37,7 +50,10 @@
 //! }
 //! # }
 //! ```
-
+//! ## Implementation State
+//! - [ADC calibration is not implemented for all targets].
+//!
+//! [ADC calibration is not implemented for all targets]: https://github.com/esp-rs/esp-hal/issues/326
 use core::marker::PhantomData;
 
 pub use self::implementation::*;
@@ -50,7 +66,7 @@ mod implementation;
 
 /// The attenuation of the ADC pin.
 ///
-/// The effective measurement range for a given attuenation is dependent on the
+/// The effective measurement range for a given attenuation is dependent on the
 /// device being targeted. Please refer to "ADC Characteristics" section of your
 /// device's datasheet for more information.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,13 +87,17 @@ pub enum Attenuation {
 #[cfg(not(esp32))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdcCalSource {
+    /// Use Ground as the calibration source
     Gnd,
+    /// Use Vref as the calibration source
     Ref,
 }
 
 /// An I/O pin which can be read using the ADC.
 pub struct AdcPin<PIN, ADCI, CS = ()> {
+    /// The underlying GPIO pin
     pub pin: PIN,
+    /// Calibration scheme used for the configured ADC pin
     #[cfg_attr(esp32, allow(unused))]
     pub cal_scheme: CS,
     _phantom: PhantomData<ADCI>,
@@ -97,8 +117,9 @@ where
 
 /// Configuration for the ADC.
 pub struct AdcConfig<ADCI> {
-    pub resolution: Resolution,
-    pub attenuations: [Option<Attenuation>; NUM_ATTENS],
+    #[cfg_attr(not(esp32), allow(unused))]
+    resolution: Resolution,
+    attenuations: [Option<Attenuation>; NUM_ATTENS],
     _phantom: PhantomData<ADCI>,
 }
 
@@ -174,6 +195,7 @@ pub trait CalibrationAccess: RegisterAccess {
 
 /// A helper trait to get the ADC channel of a compatible GPIO pin.
 pub trait AdcChannel {
+    /// Channel number used by the ADC
     const CHANNEL: u8;
 }
 
@@ -186,13 +208,12 @@ pub trait AdcCalScheme<ADCI>: Sized + crate::private::Sealed {
     /// Create a new calibration scheme for the given attenuation.
     fn new_cal(atten: Attenuation) -> Self;
 
-    /// Return the basic ADC bias value. See [`AdcCalBasic`] for
-    /// details.
+    /// Return the basic ADC bias value.
     fn adc_cal(&self) -> u16 {
         0
     }
 
-    /// Convert ADC value
+    /// Convert ADC value.
     fn adc_val(&self, val: u16) -> u16 {
         val
     }
@@ -205,7 +226,7 @@ impl<ADCI> AdcCalScheme<ADCI> for () {
 }
 
 /// A helper trait to get access to ADC calibration efuses.
-#[cfg(not(esp32h2))]
+#[cfg(not(any(esp32, esp32s2, esp32h2)))]
 trait AdcCalEfuse {
     /// Get ADC calibration init code
     ///

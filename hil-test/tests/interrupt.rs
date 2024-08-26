@@ -10,18 +10,17 @@
 use core::{arch::asm, cell::RefCell};
 
 use critical_section::Mutex;
-use defmt::info;
-use defmt_rtt as _;
-use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
     interrupt::{self, *},
     peripherals::{Interrupt, Peripherals},
     system::{SoftwareInterrupt, SystemControl},
 };
+use hil_test as _;
 
 static SWINT0: Mutex<RefCell<Option<SoftwareInterrupt<0>>>> = Mutex::new(RefCell::new(None));
 
+#[allow(unused)] // TODO: Remove attribute when interrupt latency test re-enabled
 struct Context {
     sw0_trigger_addr: u32,
 }
@@ -78,7 +77,7 @@ fn interrupt20() {
             x = inout(reg) perf_counter,
         )
     };
-    info!("Performance counter:{}", perf_counter);
+    defmt::info!("Performance counter:{}", perf_counter);
     // TODO these values should be adjusted to catch smaller regressions
     cfg_if::cfg_if! {
         if #[cfg(any(feature = "esp32c3", feature = "esp32c2"))] {

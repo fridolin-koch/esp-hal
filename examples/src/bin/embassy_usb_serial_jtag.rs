@@ -3,7 +3,7 @@
 //! Most dev-kits use a USB-UART-bridge - in that case you won't see any output.
 
 //% CHIPS: esp32c3 esp32c6 esp32h2 esp32s3
-//% FEATURES: async embassy embassy-time-timg0 embassy-generic-timers
+//% FEATURES: async embassy embassy-generic-timers
 
 #![no_std]
 #![no_main]
@@ -14,7 +14,6 @@ use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
     peripherals::Peripherals,
-    prelude::*,
     system::SystemControl,
     timer::timg::TimerGroup,
     usb_serial_jtag::{UsbSerialJtag, UsbSerialJtagRx, UsbSerialJtagTx},
@@ -63,14 +62,15 @@ async fn reader(
     }
 }
 
-#[main]
+#[esp_hal_embassy::main]
 async fn main(spawner: Spawner) -> () {
     esp_println::println!("Init!");
     let peripherals = Peripherals::take();
     let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    esp_hal_embassy::init(&clocks, TimerGroup::new_async(peripherals.TIMG0, &clocks));
+    let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
+    esp_hal_embassy::init(&clocks, timg0.timer0);
 
     let (tx, rx) = UsbSerialJtag::new_async(peripherals.USB_DEVICE).split();
 

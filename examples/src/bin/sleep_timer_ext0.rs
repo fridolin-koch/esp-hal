@@ -1,4 +1,7 @@
-//! Demonstrates deep sleep with timer and ext0 (using gpio4) wakeup
+//! Demonstrates deep sleep with timer and ext0 wakeup
+//!
+//! The following wiring is assumed:
+//! - ext0 wakeup pin => GPIO4
 
 //% CHIPS: esp32 esp32s3
 
@@ -32,7 +35,7 @@ fn main() -> ! {
     let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let mut rtc = Rtc::new(peripherals.LPWR, None);
+    let mut rtc = Rtc::new(peripherals.LPWR);
 
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
     let mut ext0_pin = io.pins.gpio4;
@@ -43,11 +46,11 @@ fn main() -> ! {
     let wake_reason = get_wakeup_cause();
     println!("wake reason: {:?}", wake_reason);
 
-    let mut delay = Delay::new(&clocks);
+    let delay = Delay::new(&clocks);
 
     let timer = TimerWakeupSource::new(Duration::from_secs(30));
     let ext0 = Ext0WakeupSource::new(&mut ext0_pin, WakeupLevel::High);
     println!("sleeping!");
     delay.delay_millis(100);
-    rtc.sleep_deep(&[&timer, &ext0], &mut delay);
+    rtc.sleep_deep(&[&timer, &ext0]);
 }

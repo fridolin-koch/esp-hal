@@ -1,16 +1,13 @@
-//! # RTC_CNTL (Real-Time Clock Control) and Low-power Management
+//! # Real-Time Clock Control and Low-power Management (RTC_CNTL)
 //!
 //! ## Overview
-//! The `rtc_cntl` module provides a driver for the `RTC_CNTL` peripheral on ESP
-//! chips.
+//! The RTC_CNTL peripheral is responsible for managing the real-time clock and
+//! low-power modes on the chip.
 //!
-//! The `Real-Time Clock Control (RTC_CNTL)` peripheral is responsible for
-//! managing the real-time clock and low-power modes on the chip.
-//!
-//! The `rtc_cntl` driver module contains functions and data structures to
-//! interact with the `RTC_CNTL` peripheral on ESP chips. It also includes the
-//! necessary configurations and constants for clock sources and low-power
-//! management. The driver provides the following features and functionalities:
+//! ## Configuration
+//!  It also includes the necessary configurations and constants for clock
+//! sources and low-power management. The driver provides the following features
+//! and functionalities:
 //!    * Clock Configuration
 //!    * Calibration
 //!    * Low-Power Management
@@ -18,7 +15,7 @@
 //!    * Handling Watchdog Timers
 //!
 //! ## Examples
-//! ### Print time in milliseconds from the RTC Timer
+//! ### Print Time in Milliseconds From the RTC Timer
 //! ```rust, no_run
 #![doc = crate::before_snippet!()]
 //! # use core::cell::RefCell;
@@ -28,10 +25,12 @@
 //! # use esp_hal::rtc_cntl::Rtc;
 //! # use esp_hal::rtc_cntl::Rwdt;
 //! # use crate::esp_hal::prelude::_fugit_ExtU64;
+//! # use crate::esp_hal::InterruptConfigurable;
 //! static RWDT: Mutex<RefCell<Option<Rwdt>>> = Mutex::new(RefCell::new(None));
 //! let mut delay = Delay::new(&clocks);
 //!
-//! let mut rtc = Rtc::new(peripherals.LPWR, Some(interrupt_handler));
+//! let mut rtc = Rtc::new(peripherals.LPWR);
+//! rtc.set_interrupt_handler(interrupt_handler);
 //! rtc.rwdt.set_timeout(2000.millis());
 //! rtc.rwdt.listen();
 //!
@@ -92,6 +91,7 @@ use crate::{
     peripherals::Interrupt,
     reset::{SleepSource, WakeupReason},
     Cpu,
+    InterruptConfigurable,
 };
 // only include sleep where its been implemented
 #[cfg(any(esp32, esp32s3, esp32c3, esp32c6))]
@@ -184,8 +184,10 @@ pub(crate) enum RtcCalSel {
 /// Low-power Management
 pub struct Rtc<'d> {
     _inner: PeripheralRef<'d, crate::peripherals::LPWR>,
+    /// Reset Watchdog Timer.
     pub rwdt: Rwdt,
     #[cfg(any(esp32c2, esp32c3, esp32c6, esp32h2, esp32s3))]
+    /// Super Watchdog
     pub swd: Swd,
 }
 
@@ -193,10 +195,7 @@ impl<'d> Rtc<'d> {
     /// Create a new instance in [crate::Blocking] mode.
     ///
     /// Optionally an interrupt handler can be bound.
-    pub fn new(
-        rtc_cntl: impl Peripheral<P = crate::peripherals::LPWR> + 'd,
-        interrupt: Option<InterruptHandler>,
-    ) -> Self {
+    pub fn new(rtc_cntl: impl Peripheral<P = crate::peripherals::LPWR> + 'd) -> Self {
         rtc::init();
         rtc::configure_clock();
 
@@ -209,26 +208,6 @@ impl<'d> Rtc<'d> {
 
         #[cfg(any(esp32, esp32s3, esp32c3, esp32c6))]
         RtcSleepConfig::base_settings(&this);
-
-        if let Some(interrupt) = interrupt {
-            unsafe {
-                interrupt::bind_interrupt(
-                    #[cfg(any(esp32c6, esp32h2))]
-                    Interrupt::LP_WDT,
-                    #[cfg(not(any(esp32c6, esp32h2)))]
-                    Interrupt::RTC_CORE,
-                    interrupt.handler(),
-                );
-                interrupt::enable(
-                    #[cfg(any(esp32c6, esp32h2))]
-                    Interrupt::LP_WDT,
-                    #[cfg(not(any(esp32c6, esp32h2)))]
-                    Interrupt::RTC_CORE,
-                    interrupt.priority(),
-                )
-                .unwrap();
-            }
-        }
 
         this
     }
@@ -289,36 +268,23 @@ impl<'d> Rtc<'d> {
 
     /// Enter deep sleep and wake with the provided `wake_sources`.
     #[cfg(any(esp32, esp32s3, esp32c3, esp32c6))]
-    pub fn sleep_deep(
-        &mut self,
-        wake_sources: &[&dyn WakeSource],
-        delay: &mut crate::delay::Delay,
-    ) -> ! {
+    pub fn sleep_deep(&mut self, wake_sources: &[&dyn WakeSource]) -> ! {
         let config = RtcSleepConfig::deep();
-        self.sleep(&config, wake_sources, delay);
+        self.sleep(&config, wake_sources);
         unreachable!();
     }
 
     /// Enter light sleep and wake with the provided `wake_sources`.
     #[cfg(any(esp32, esp32s3, esp32c3, esp32c6))]
-    pub fn sleep_light(
-        &mut self,
-        wake_sources: &[&dyn WakeSource],
-        delay: &mut crate::delay::Delay,
-    ) {
+    pub fn sleep_light(&mut self, wake_sources: &[&dyn WakeSource]) {
         let config = RtcSleepConfig::default();
-        self.sleep(&config, wake_sources, delay);
+        self.sleep(&config, wake_sources);
     }
 
     /// Enter sleep with the provided `config` and wake with the provided
     /// `wake_sources`.
     #[cfg(any(esp32, esp32s3, esp32c3, esp32c6))]
-    pub fn sleep(
-        &mut self,
-        config: &RtcSleepConfig,
-        wake_sources: &[&dyn WakeSource],
-        delay: &mut crate::delay::Delay,
-    ) {
+    pub fn sleep(&mut self, config: &RtcSleepConfig, wake_sources: &[&dyn WakeSource]) {
         let mut config = *config;
         let mut wakeup_triggers = WakeTriggers::default();
         for wake_source in wake_sources {
@@ -326,10 +292,32 @@ impl<'d> Rtc<'d> {
         }
 
         config.apply();
-        delay.delay_millis(100);
 
         config.start_sleep(wakeup_triggers);
         config.finish_sleep();
+    }
+}
+impl<'d> crate::private::Sealed for Rtc<'d> {}
+
+impl<'d> InterruptConfigurable for Rtc<'d> {
+    fn set_interrupt_handler(&mut self, handler: InterruptHandler) {
+        unsafe {
+            interrupt::bind_interrupt(
+                #[cfg(any(esp32c6, esp32h2))]
+                Interrupt::LP_WDT,
+                #[cfg(not(any(esp32c6, esp32h2)))]
+                Interrupt::RTC_CORE,
+                handler.handler(),
+            );
+            interrupt::enable(
+                #[cfg(any(esp32c6, esp32h2))]
+                Interrupt::LP_WDT,
+                #[cfg(not(any(esp32c6, esp32h2)))]
+                Interrupt::RTC_CORE,
+                handler.priority(),
+            )
+            .unwrap();
+        }
     }
 }
 

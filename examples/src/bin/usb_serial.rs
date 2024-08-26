@@ -1,6 +1,10 @@
 //! CDC-ACM serial port example using polling in a busy loop.
 //!
 //! This example should be built in release mode.
+//!
+//! The following wiring is assumed:
+//! - DP => GPIO20
+//! - DM => GPIO19
 
 //% CHIPS: esp32s2 esp32s3
 
@@ -27,7 +31,7 @@ fn main() -> ! {
 
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
-    let usb = Usb::new(peripherals.USB0, io.pins.gpio19, io.pins.gpio20);
+    let usb = Usb::new(peripherals.USB0, io.pins.gpio20, io.pins.gpio19);
     let usb_bus = UsbBus::new(usb, unsafe { &mut *addr_of_mut!(EP_MEMORY) });
 
     let mut serial = SerialPort::new(&usb_bus);

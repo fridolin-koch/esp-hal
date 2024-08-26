@@ -1,9 +1,13 @@
 //! CDC-ACM serial port example using embassy.
 //!
 //! This example should be built in release mode.
+//!
+//! The following wiring is assumed:
+//! - DP => GPIO20
+//! - DM => GPIO19
 
 //% CHIPS: esp32s2 esp32s3
-//% FEATURES: async embassy embassy-time-timg0 embassy-generic-timers
+//% FEATURES: async embassy embassy-generic-timers
 
 #![no_std]
 #![no_main]
@@ -24,22 +28,23 @@ use esp_hal::{
         Usb,
     },
     peripherals::Peripherals,
-    prelude::*,
     system::SystemControl,
     timer::timg::TimerGroup,
 };
 
-#[main]
+#[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) -> () {
     esp_println::println!("Init!");
     let peripherals = Peripherals::take();
     let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    esp_hal_embassy::init(&clocks, TimerGroup::new_async(peripherals.TIMG0, &clocks));
+    let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
+    esp_hal_embassy::init(&clocks, timg0.timer0);
+
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
-    let usb = Usb::new(peripherals.USB0, io.pins.gpio19, io.pins.gpio20);
+    let usb = Usb::new(peripherals.USB0, io.pins.gpio20, io.pins.gpio19);
 
     // Create the driver, from the HAL.
     let mut ep_out_buffer = [0u8; 1024];
@@ -62,7 +67,6 @@ async fn main(_spawner: Spawner) -> () {
 
     // Create embassy-usb DeviceBuilder using the driver and config.
     // It needs some buffers for building the descriptors.
-    let mut device_descriptor = [0; 256];
     let mut config_descriptor = [0; 256];
     let mut bos_descriptor = [0; 256];
     let mut control_buf = [0; 64];
@@ -72,7 +76,6 @@ async fn main(_spawner: Spawner) -> () {
     let mut builder = Builder::new(
         driver,
         config,
-        &mut device_descriptor,
         &mut config_descriptor,
         &mut bos_descriptor,
         &mut [], // no msos descriptors

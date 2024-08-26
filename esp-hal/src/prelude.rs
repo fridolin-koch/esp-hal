@@ -1,15 +1,11 @@
-//! The prelude
+//! # The `esp-hal` Prelude
 //!
-//! Re-exports all traits required for interacting with the various peripheral
-//! drivers implemented in this crate.
+//! ## Overview
+//! The prelude is the list of things that `esp-hal` automatically imports into
+//! every program. It’s kept as small as possible, and is focused on
+//! things, particularly traits, which are used in almost every single Rust
+//! program.
 
-pub use embedded_dma::{
-    ReadBuffer as _embedded_dma_ReadBuffer,
-    ReadTarget as _embedded_dma_ReadTarget,
-    Word as _embedded_dma_Word,
-    WriteBuffer as _embedded_dma_WriteBuffer,
-    WriteTarget as _embedded_dma_WriteTarget,
-};
 pub use fugit::{ExtU64 as _fugit_ExtU64, RateExtU32 as _fugit_RateExtU32};
 pub use nb;
 
@@ -42,4 +38,4 @@ pub use crate::timer::timg::{
 pub use crate::timer::Timer as _esp_hal_timer_Timer;
 #[cfg(any(uart0, uart1, uart2))]
 pub use crate::uart::Instance as _esp_hal_uart_Instance;
-pub use crate::{entry, macros::*};
+pub use crate::{entry, macros::*, InterruptConfigurable};

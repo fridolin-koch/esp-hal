@@ -2,9 +2,12 @@
 //!
 //! The second core runs a simple LED blinking task, that is controlled by a
 //! signal set by the task running on the other core.
+//!
+//! The following wiring is assumed:
+//! - LED => GPIO0
 
 //% CHIPS: esp32 esp32s3
-//% FEATURES: embassy embassy-time-timg0 embassy-generic-timers
+//% FEATURES: embassy embassy-generic-timers
 
 #![no_std]
 #![no_main]
@@ -21,15 +24,24 @@ use esp_hal::{
     get_core,
     gpio::{AnyOutput, Io, Level},
     peripherals::Peripherals,
-    prelude::*,
     system::SystemControl,
-    timer::timg::TimerGroup,
+    timer::{timg::TimerGroup, ErasedTimer, OneShotTimer},
 };
 use esp_hal_embassy::Executor;
 use esp_println::println;
 use static_cell::StaticCell;
 
 static mut APP_CORE_STACK: Stack<8192> = Stack::new();
+
+// When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
+macro_rules! mk_static {
+    ($t:ty,$val:expr) => {{
+        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
+        #[deny(unused_attributes)]
+        let x = STATIC_CELL.uninit().write(($val));
+        x
+    }};
+}
 
 /// Waits for a message that contains a duration, then flashes a led for that
 /// duration of time.
@@ -50,7 +62,7 @@ async fn control_led(
     }
 }
 
-#[main]
+#[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) {
     let peripherals = Peripherals::take();
     let system = SystemControl::new(peripherals.SYSTEM);
@@ -58,8 +70,12 @@ async fn main(_spawner: Spawner) {
 
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
-    let timg0 = TimerGroup::new_async(peripherals.TIMG0, &clocks);
-    esp_hal_embassy::init(&clocks, timg0);
+    let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
+    let timer0: ErasedTimer = timg0.timer0.into();
+    let timer1: ErasedTimer = timg0.timer1.into();
+    let timers = [OneShotTimer::new(timer0), OneShotTimer::new(timer1)];
+    let timers = mk_static!([OneShotTimer<ErasedTimer>; 2], timers);
+    esp_hal_embassy::init(&clocks, timers);
 
     let mut cpu_control = CpuControl::new(peripherals.CPU_CTRL);
 

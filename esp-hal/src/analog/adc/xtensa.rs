@@ -6,6 +6,7 @@ use crate::efuse::Efuse;
 use crate::{
     peripheral::PeripheralRef,
     peripherals::{APB_SARADC, SENS},
+    system::{Peripheral, PeripheralClockControl},
 };
 
 mod calibration;
@@ -74,6 +75,7 @@ cfg_if::cfg_if! {
 /// The sampling/readout resolution of the ADC.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Resolution {
+    /// 13-bit resolution
     #[default]
     Resolution13Bit,
 }
@@ -399,6 +401,9 @@ where
         adc_instance: impl crate::peripheral::Peripheral<P = ADCI> + 'd,
         config: AdcConfig<ADCI>,
     ) -> Self {
+        PeripheralClockControl::reset(Peripheral::ApbSarAdc);
+        PeripheralClockControl::enable(Peripheral::ApbSarAdc);
+
         let sensors = unsafe { &*SENS::ptr() };
 
         // Set attenuation for pins

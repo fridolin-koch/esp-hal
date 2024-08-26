@@ -1,33 +1,34 @@
 //! # General-purpose Timers
 //!
+//! ## Overview
 //! The [OneShotTimer] and [PeriodicTimer] types can be backed by any hardware
-//! peripheral which implements the [Timer] trait.
-//!
-//! ## Usage
-//!
-//! ### Examples
-//!
-//! #### One-shot Timer
-//!
+//! peripheral which implements the [Timer] trait. This means that the same API
+//! can be used to interact with different hardware timers, like the `TIMG` and
+//! SYSTIMER.
+#![cfg_attr(
+    not(feature = "esp32"),
+    doc = "See the [timg] and [systimer] modules for more information."
+)]
+#![cfg_attr(feature = "esp32", doc = "See the [timg] module for more information.")]
+//! ## Examples
+//! ### One-shot Timer
 //! ```rust, no_run
 #![doc = crate::before_snippet!()]
 //! # use esp_hal::timer::{OneShotTimer, PeriodicTimer, timg::TimerGroup};
 //! # use esp_hal::prelude::*;
-//! # use core::option::Option::None;
-//! let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks, None);
+//! let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
 //! let one_shot = OneShotTimer::new(timg0.timer0);
 //!
 //! one_shot.delay_millis(500);
 //! # }
 //! ```
 //! 
-//! #### Periodic Timer
+//! ### Periodic Timer
 //! ```rust, no_run
 #![doc = crate::before_snippet!()]
 //! # use esp_hal::timer::{PeriodicTimer, timg::TimerGroup};
 //! # use esp_hal::prelude::*;
-//! # use core::option::Option::None;
-//! let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks, None);
+//! let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
 //! let mut periodic = PeriodicTimer::new(timg0.timer0);
 //!
 //! periodic.start(1.secs());
@@ -37,9 +38,14 @@
 //! # }
 //! ```
 
-#![deny(missing_docs)]
-
 use fugit::{ExtU64, Instant, MicrosDurationU64};
+
+use crate::{
+    interrupt::InterruptHandler,
+    peripheral::{Peripheral, PeripheralRef},
+    Blocking,
+    InterruptConfigurable,
+};
 
 #[cfg(systimer)]
 pub mod systimer;
@@ -89,6 +95,11 @@ pub trait Timer: crate::private::Sealed {
     /// Clear the timer's interrupt.
     fn clear_interrupt(&self);
 
+    /// Set the interrupt handler
+    ///
+    /// Note that this will replace any previously set interrupt handler
+    fn set_interrupt_handler(&self, handler: InterruptHandler);
+
     /// Has the timer triggered?
     fn is_interrupt_set(&self) -> bool;
 
@@ -98,16 +109,18 @@ pub trait Timer: crate::private::Sealed {
 }
 
 /// A one-shot timer.
-pub struct OneShotTimer<T> {
-    inner: T,
+pub struct OneShotTimer<'d, T> {
+    inner: PeripheralRef<'d, T>,
 }
 
-impl<T> OneShotTimer<T>
+impl<'d, T> OneShotTimer<'d, T>
 where
     T: Timer,
 {
     /// Construct a new instance of [`OneShotTimer`].
-    pub fn new(inner: T) -> Self {
+    pub fn new(inner: impl Peripheral<P = T> + 'd) -> Self {
+        crate::into_ref!(inner);
+
         Self { inner }
     }
 
@@ -145,10 +158,60 @@ where
         self.inner.stop();
         self.inner.clear_interrupt();
     }
+
+    /// Start counting until the given timeout and raise an interrupt
+    pub fn schedule(&mut self, timeout: MicrosDurationU64) -> Result<(), Error> {
+        if self.inner.is_running() {
+            self.inner.stop();
+        }
+
+        self.inner.clear_interrupt();
+        self.inner.reset();
+
+        self.inner.enable_auto_reload(false);
+        self.inner.load_value(timeout)?;
+        self.inner.start();
+
+        Ok(())
+    }
+
+    /// Stop the timer
+    pub fn stop(&mut self) {
+        self.inner.stop();
+    }
+
+    /// Set the interrupt handler
+    ///
+    /// Note that this will replace any previously set interrupt handler
+    pub fn set_interrupt_handler(&mut self, handler: InterruptHandler) {
+        self.inner.set_interrupt_handler(handler);
+    }
+
+    /// Enable listening for interrupts
+    pub fn enable_interrupt(&mut self, enable: bool) {
+        self.inner.enable_interrupt(enable);
+    }
+
+    /// Clear the interrupt flag
+    pub fn clear_interrupt(&mut self) {
+        self.inner.clear_interrupt();
+        self.inner.set_alarm_active(false);
+    }
+}
+
+impl<'d, T> crate::private::Sealed for OneShotTimer<'d, T> where T: Timer {}
+
+impl<'d, T> InterruptConfigurable for OneShotTimer<'d, T>
+where
+    T: Timer,
+{
+    fn set_interrupt_handler(&mut self, handler: crate::interrupt::InterruptHandler) {
+        OneShotTimer::set_interrupt_handler(self, handler);
+    }
 }
 
 #[cfg(feature = "embedded-hal-02")]
-impl<T, UXX> embedded_hal_02::blocking::delay::DelayMs<UXX> for OneShotTimer<T>
+impl<'d, T, UXX> embedded_hal_02::blocking::delay::DelayMs<UXX> for OneShotTimer<'d, T>
 where
     T: Timer,
     UXX: Into<u32>,
@@ -159,7 +222,7 @@ where
 }
 
 #[cfg(feature = "embedded-hal-02")]
-impl<T, UXX> embedded_hal_02::blocking::delay::DelayUs<UXX> for OneShotTimer<T>
+impl<'d, T, UXX> embedded_hal_02::blocking::delay::DelayUs<UXX> for OneShotTimer<'d, T>
 where
     T: Timer,
     UXX: Into<u32>,
@@ -170,7 +233,7 @@ where
 }
 
 #[cfg(feature = "embedded-hal")]
-impl<T> embedded_hal::delay::DelayNs for OneShotTimer<T>
+impl<'d, T> embedded_hal::delay::DelayNs for OneShotTimer<'d, T>
 where
     T: Timer,
 {
@@ -180,16 +243,18 @@ where
 }
 
 /// A periodic timer.
-pub struct PeriodicTimer<T> {
-    inner: T,
+pub struct PeriodicTimer<'d, T> {
+    inner: PeripheralRef<'d, T>,
 }
 
-impl<T> PeriodicTimer<T>
+impl<'d, T> PeriodicTimer<'d, T>
 where
     T: Timer,
 {
     /// Construct a new instance of [`PeriodicTimer`].
-    pub fn new(inner: T) -> Self {
+    pub fn new(inner: impl Peripheral<P = T> + 'd) -> Self {
+        crate::into_ref!(inner);
+
         Self { inner }
     }
 
@@ -231,10 +296,39 @@ where
 
         Ok(())
     }
+
+    /// Set the interrupt handler
+    ///
+    /// Note that this will replace any previously set interrupt handler
+    pub fn set_interrupt_handler(&mut self, handler: InterruptHandler) {
+        self.inner.set_interrupt_handler(handler);
+    }
+
+    /// Enable/disable listening for interrupts
+    pub fn enable_interrupt(&mut self, enable: bool) {
+        self.inner.enable_interrupt(enable);
+    }
+
+    /// Clear the interrupt flag
+    pub fn clear_interrupt(&mut self) {
+        self.inner.clear_interrupt();
+        self.inner.set_alarm_active(true);
+    }
+}
+
+impl<'d, T> crate::private::Sealed for PeriodicTimer<'d, T> where T: Timer {}
+
+impl<'d, T> InterruptConfigurable for PeriodicTimer<'d, T>
+where
+    T: Timer,
+{
+    fn set_interrupt_handler(&mut self, handler: crate::interrupt::InterruptHandler) {
+        PeriodicTimer::set_interrupt_handler(self, handler);
+    }
 }
 
 #[cfg(feature = "embedded-hal-02")]
-impl<T> embedded_hal_02::timer::CountDown for PeriodicTimer<T>
+impl<'d, T> embedded_hal_02::timer::CountDown for PeriodicTimer<'d, T>
 where
     T: Timer,
 {
@@ -253,7 +347,7 @@ where
 }
 
 #[cfg(feature = "embedded-hal-02")]
-impl<T> embedded_hal_02::timer::Cancel for PeriodicTimer<T>
+impl<'d, T> embedded_hal_02::timer::Cancel for PeriodicTimer<'d, T>
 where
     T: Timer,
 {
@@ -265,4 +359,114 @@ where
 }
 
 #[cfg(feature = "embedded-hal-02")]
-impl<T> embedded_hal_02::timer::Periodic for PeriodicTimer<T> where T: Timer {}
+impl<'d, T> embedded_hal_02::timer::Periodic for PeriodicTimer<'d, T> where T: Timer {}
+
+/// A type-erased timer
+///
+/// You can create an instance of this by just calling `.into()` on a timer.
+pub enum ErasedTimer {
+    /// Timer 0 of the TIMG0 peripheral in blocking mode.
+    Timg0Timer0(timg::Timer<timg::Timer0<crate::peripherals::TIMG0>, Blocking>),
+    /// Timer 1 of the TIMG0 peripheral in blocking mode.
+    #[cfg(timg_timer1)]
+    Timg0Timer1(timg::Timer<timg::Timer1<crate::peripherals::TIMG0>, Blocking>),
+    /// Timer 0 of the TIMG1 peripheral in blocking mode.
+    #[cfg(timg1)]
+    Timg1Timer0(timg::Timer<timg::Timer0<crate::peripherals::TIMG1>, Blocking>),
+    /// Timer 1 of the TIMG1 peripheral in blocking mode.
+    #[cfg(all(timg1, timg_timer1))]
+    Timg1Timer1(timg::Timer<timg::Timer1<crate::peripherals::TIMG1>, Blocking>),
+    /// Systimer Alarm in periodic mode with blocking behavior.
+    #[cfg(systimer)]
+    SystimerAlarmPeriodic(systimer::Alarm<'static, systimer::Periodic, Blocking>),
+    /// Systimer Target in periodic mode with blocking behavior.
+    #[cfg(systimer)]
+    SystimerAlarmTarget(systimer::Alarm<'static, systimer::Target, Blocking>),
+}
+
+impl crate::private::Sealed for ErasedTimer {}
+
+impl From<timg::Timer<timg::Timer0<crate::peripherals::TIMG0>, Blocking>> for ErasedTimer {
+    fn from(value: timg::Timer<timg::Timer0<crate::peripherals::TIMG0>, Blocking>) -> Self {
+        Self::Timg0Timer0(value)
+    }
+}
+
+#[cfg(timg_timer1)]
+impl From<timg::Timer<timg::Timer1<crate::peripherals::TIMG0>, Blocking>> for ErasedTimer {
+    fn from(value: timg::Timer<timg::Timer1<crate::peripherals::TIMG0>, Blocking>) -> Self {
+        Self::Timg0Timer1(value)
+    }
+}
+
+#[cfg(timg1)]
+impl From<timg::Timer<timg::Timer0<crate::peripherals::TIMG1>, Blocking>> for ErasedTimer {
+    fn from(value: timg::Timer<timg::Timer0<crate::peripherals::TIMG1>, Blocking>) -> Self {
+        Self::Timg1Timer0(value)
+    }
+}
+
+#[cfg(all(timg1, timg_timer1))]
+impl From<timg::Timer<timg::Timer1<crate::peripherals::TIMG1>, Blocking>> for ErasedTimer {
+    fn from(value: timg::Timer<timg::Timer1<crate::peripherals::TIMG1>, Blocking>) -> Self {
+        Self::Timg1Timer1(value)
+    }
+}
+
+#[cfg(systimer)]
+impl From<systimer::Alarm<'static, systimer::Periodic, Blocking>> for ErasedTimer {
+    fn from(value: systimer::Alarm<'static, systimer::Periodic, Blocking>) -> Self {
+        Self::SystimerAlarmPeriodic(value)
+    }
+}
+
+#[cfg(systimer)]
+impl From<systimer::Alarm<'static, systimer::Target, Blocking>> for ErasedTimer {
+    fn from(value: systimer::Alarm<'static, systimer::Target, Blocking>) -> Self {
+        Self::SystimerAlarmTarget(value)
+    }
+}
+
+impl Timer for ErasedTimer {
+    // Rather than manually implementing `Timer` for each variant of `ErasedTimer`,
+    // we use `delegate::delegate!{}` to do this for us. Otherwise, each function
+    // implementation would require its own `match` block for each enum variant,
+    // which would very quickly result in a large amount of duplicated code.
+    delegate::delegate! {
+        to match self {
+            ErasedTimer::Timg0Timer0(inner) => inner,
+            #[cfg(timg_timer1)]
+            ErasedTimer::Timg0Timer1(inner) => inner,
+            #[cfg(timg1)]
+            ErasedTimer::Timg1Timer0(inner) => inner,
+            #[cfg(all(timg1,timg_timer1))]
+            ErasedTimer::Timg1Timer1(inner) => inner,
+            #[cfg(systimer)]
+            ErasedTimer::SystimerAlarmPeriodic(inner) => inner,
+            #[cfg(systimer)]
+            ErasedTimer::SystimerAlarmTarget(inner) => inner,
+        } {
+            fn start(&self);
+            fn stop(&self);
+            fn reset(&self);
+            fn is_running(&self) -> bool;
+            fn now(&self) -> Instant<u64, 1, 1_000_000>;
+            fn load_value(&self, value: MicrosDurationU64) -> Result<(), Error>;
+            fn enable_auto_reload(&self, auto_reload: bool);
+            fn enable_interrupt(&self, state: bool);
+            fn clear_interrupt(&self);
+            fn set_interrupt_handler(&self, handler: InterruptHandler);
+            fn is_interrupt_set(&self) -> bool;
+            fn set_alarm_active(&self, state: bool);
+        }
+    }
+}
+
+impl Peripheral for ErasedTimer {
+    type P = Self;
+
+    #[inline]
+    unsafe fn clone_unchecked(&mut self) -> Self::P {
+        core::ptr::read(self as *const _)
+    }
+}

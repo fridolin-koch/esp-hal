@@ -1,18 +1,18 @@
-//! # Event Task Matrix Function
+//! # Event Task Matrix (ETM)
 //!
 //! ## Overview
-//!
 //! GPIO supports ETM function, that is, the ETM task of GPIO can be
 //! triggered by the ETM event of any peripheral, or the ETM task of any
 //! peripheral can be triggered by the ETM event of GPIO.
 //!
-//! The GPIO ETM provides eight task channels. The ETM tasks that each task
+//! ## Configuration
+//! The GPIO ETM provides several task channels. The ETM tasks that each task
 //! channel can receive are:
 //! - SET: GPIO goes high when triggered
 //! - CLEAR: GPIO goes low when triggered
 //! - TOGGLE: GPIO toggle level when triggered.
 //!
-//! GPIO has eight event channels, and the ETM events that each event
+//! GPIO has several event channels, and the ETM events that each event
 //! channel can generate are:
 //! - RISE_EDGE: Indicates that the output signal of the corresponding GPIO has
 //!   a rising edge
@@ -21,7 +21,8 @@
 //! - ANY_EDGE: Indicates that the output signal of the corresponding GPIO is
 //!   reversed
 //!
-//! ## Example
+//! ## Examples
+//! ### Toggle an LED When a Button is Pressed
 //! ```rust, no_run
 #![doc = crate::before_snippet!()]
 //! # use esp_hal::gpio::Io;
@@ -59,24 +60,39 @@ use crate::{
 
 /// All the GPIO ETM channels
 #[non_exhaustive]
-#[allow(missing_docs)]
 pub struct GpioEtmChannels<'d> {
     _gpio_sd: PeripheralRef<'d, crate::peripherals::GPIO_SD>,
+    /// Task channel 0 for triggering GPIO tasks.
     pub channel0_task: GpioEtmTaskChannel<0>,
+    /// Event channel 0 for handling GPIO events.
     pub channel0_event: GpioEtmEventChannel<0>,
+    /// Task channel 1 for triggering GPIO tasks.
     pub channel1_task: GpioEtmTaskChannel<1>,
+    /// Event channel 1 for handling GPIO events.
     pub channel1_event: GpioEtmEventChannel<1>,
+    /// Task channel 2 for triggering GPIO tasks.
     pub channel2_task: GpioEtmTaskChannel<2>,
+    /// Event channel 2 for handling GPIO events.
     pub channel2_event: GpioEtmEventChannel<2>,
+    /// Task channel 3 for triggering GPIO tasks.
     pub channel3_task: GpioEtmTaskChannel<3>,
+    /// Event channel 3 for handling GPIO events.
     pub channel3_event: GpioEtmEventChannel<3>,
+    /// Task channel 4 for triggering GPIO tasks.
     pub channel4_task: GpioEtmTaskChannel<4>,
+    /// Event channel 4 for handling GPIO events.
     pub channel4_event: GpioEtmEventChannel<4>,
+    /// Task channel 5 for triggering GPIO tasks.
     pub channel5_task: GpioEtmTaskChannel<5>,
+    /// Event channel 5 for handling GPIO events.
     pub channel5_event: GpioEtmEventChannel<5>,
+    /// Task channel 6 for triggering GPIO tasks.
     pub channel6_task: GpioEtmTaskChannel<6>,
+    /// Event channel 6 for handling GPIO events.
     pub channel6_event: GpioEtmEventChannel<6>,
+    /// Task channel 7 for triggering GPIO tasks.
     pub channel7_task: GpioEtmTaskChannel<7>,
+    /// Event channel 7 for handling GPIO events.
     pub channel7_event: GpioEtmEventChannel<7>,
 }
 

@@ -11,11 +11,11 @@
 //!    demonstrates that this task will continue to run even while the low
 //!    priority blocking task is running.
 
-// The thread-executor is created by the `#[main]` macro and is used to spawn `low_prio_async` and `low_prio_blocking`.
+// The thread-executor is created by the `#[esp_hal_embassy::main]` macro and is used to spawn `low_prio_async` and `low_prio_blocking`.
 // The interrupt-executor is created in `main` and is used to spawn `high_prio`.
 
 //% CHIPS: esp32 esp32c2 esp32c3 esp32c6 esp32h2 esp32s2 esp32s3
-//% FEATURES: embassy embassy-time-timg0 embassy-generic-timers
+//% FEATURES: embassy esp-hal-embassy/log esp-hal-embassy/integrated-timers
 
 #![no_std]
 #![no_main]
@@ -27,13 +27,22 @@ use esp_hal::{
     clock::ClockControl,
     interrupt::Priority,
     peripherals::Peripherals,
-    prelude::*,
     system::SystemControl,
-    timer::timg::TimerGroup,
+    timer::{timg::TimerGroup, ErasedTimer, OneShotTimer},
 };
 use esp_hal_embassy::InterruptExecutor;
 use esp_println::println;
 use static_cell::StaticCell;
+
+// When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
+macro_rules! mk_static {
+    ($t:ty,$val:expr) => {{
+        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
+        #[deny(unused_attributes)]
+        let x = STATIC_CELL.uninit().write(($val));
+        x
+    }};
+}
 
 /// Periodically print something.
 #[embassy_executor::task]
@@ -70,7 +79,7 @@ async fn low_prio_async() {
     }
 }
 
-#[main]
+#[esp_hal_embassy::main]
 async fn main(low_prio_spawner: Spawner) {
     esp_println::logger::init_logger_from_env();
     println!("Init!");
@@ -78,8 +87,26 @@ async fn main(low_prio_spawner: Spawner) {
     let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let timg0 = TimerGroup::new_async(peripherals.TIMG0, &clocks);
-    esp_hal_embassy::init(&clocks, timg0);
+    let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
+    let timer0: ErasedTimer = timg0.timer0.into();
+    let timer0 = OneShotTimer::new(timer0);
+
+    #[cfg(not(feature = "esp32c2"))]
+    let timer1 = {
+        let timg1 = TimerGroup::new(peripherals.TIMG1, &clocks);
+        let timer0: ErasedTimer = timg1.timer0.into();
+        OneShotTimer::new(timer0)
+    };
+    #[cfg(feature = "esp32c2")]
+    let timer1 = {
+        let systimer = esp_hal::timer::systimer::SystemTimer::new(peripherals.SYSTIMER)
+            .split::<esp_hal::timer::systimer::Target>();
+        let alarm0: ErasedTimer = systimer.alarm0.into();
+        OneShotTimer::new(alarm0)
+    };
+
+    let timers = mk_static!([OneShotTimer<ErasedTimer>; 2], [timer0, timer1]);
+    esp_hal_embassy::init(&clocks, timers);
 
     static EXECUTOR: StaticCell<InterruptExecutor<2>> = StaticCell::new();
     let executor = InterruptExecutor::new(system.software_interrupt_control.software_interrupt2);

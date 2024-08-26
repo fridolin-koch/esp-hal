@@ -1,20 +1,33 @@
-//! # General Purpose I/Os
+//! # General Purpose I/Os (GPIO)
 //!
 //! ## Overview
-//! The GPIO peripheral provides access to General Purpose Input/Output pins on
-//! ESP chips.
+//! Each pin can be used as a general-purpose I/O, or be connected to an
+//! internal peripheral signal.
 //!
+//! ## Configuration
 //! This driver supports various operations on GPIO pins, including setting the
 //! pin mode, direction, and manipulating the pin state (setting high/low,
 //! toggling). It provides an interface to interact with GPIO pins on ESP chips,
-//! allowing developers to control and read the state of the pins. This module
-//! also implements a number of traits from [embedded-hal] to provide a common
-//! interface for GPIO pins.
+//! allowing developers to control and read the state of the pins.
+//!
+//! ## Usage
+//! This module also implements a number of traits from [embedded-hal] to
+//! provide a common interface for GPIO pins.
 //!
 //! To get access to the pins, you first need to convert them into a HAL
 //! designed struct from the pac struct `GPIO` and `IO_MUX` using `Io::new`.
 //!
-//! ## Example
+//! ### Pin Types
+//! - [Input] pins can be used as digital inputs.
+//! - [Output] and [OutputOpenDrain] pins can be used as digital outputs.
+//! - [Flex] pin is a pin that can be used as an input and output pin.
+//! - [any_pin::AnyPin] pin is type-erased that can be used for peripherals
+//!   signals.
+//!    - It supports inverting the pin, so the peripheral signal can be
+//!      inverted.
+//!
+//! ## Examples
+//! ### Set up a GPIO as an Output
 //! ```rust, no_run
 #![doc = crate::before_snippet!()]
 //! # use esp_hal::gpio::{Io, Level, Output};
@@ -23,8 +36,15 @@
 //! # }
 //! ```
 //! 
+//! ### Blink an LED
+//! See the [Commonly Used Setup] section of the crate documentation.
+//!
+//! ### Inverting a signal using `AnyPin`
+//! See the [Inverting TX and RX Pins] example of the UART documentation.
+//!
 //! [embedded-hal]: https://docs.rs/embedded-hal/latest/embedded_hal/
-#![warn(missing_docs)]
+//! [Commonly Used Setup]: ../index.html#commonly-used-setup
+//! [Inverting TX and RX Pins]: ../uart/index.html#inverting-tx-and-rx-pins
 
 use core::{cell::Cell, marker::PhantomData};
 
@@ -42,9 +62,13 @@ use crate::{
     peripheral::PeripheralRef,
     peripherals::{GPIO, IO_MUX},
     private,
+    InterruptConfigurable,
 };
+#[cfg(touch)]
+pub(crate) use crate::{touch_common, touch_into};
 
 pub mod any_pin;
+pub mod dummy_pin;
 
 #[cfg(soc_etm)]
 pub mod etm;
@@ -146,31 +170,46 @@ pub struct RtcOutput;
 pub struct Analog;
 
 /// Drive strength (values are approximates)
-#[allow(missing_docs)]
 pub enum DriveStrength {
+    /// Drive strength of approximately 5mA.
     I5mA  = 0,
+    /// Drive strength of approximately 10mA.
     I10mA = 1,
+    /// Drive strength of approximately 20mA.
     I20mA = 2,
+    /// Drive strength of approximately 40mA.
     I40mA = 3,
 }
 
 /// Alternate functions
+///
+/// GPIO pins can be configured for various functions, such as GPIO
+/// or being directly connected to a peripheral's signal like UART, SPI, etc.
+/// The `AlternateFunction` enum allows to select one of several functions that
+/// a pin can perform, rather than using it as a general-purpose input or
+/// output.
 #[derive(PartialEq)]
-#[allow(missing_docs)]
 pub enum AlternateFunction {
+    /// Alternate function 0.
     Function0 = 0,
+    /// Alternate function 1.
     Function1 = 1,
+    /// Alternate function 2.
     Function2 = 2,
+    /// Alternate function 3.
     Function3 = 3,
+    /// Alternate function 4.
     Function4 = 4,
+    /// Alternate function 5.
     Function5 = 5,
 }
 
 /// RTC function
 #[derive(PartialEq)]
-#[allow(missing_docs)]
 pub enum RtcFunction {
+    /// RTC mode.
     Rtc     = 0,
+    /// Digital mode.
     Digital = 1,
 }
 
@@ -369,6 +408,21 @@ pub trait OutputPin: Pin {
 pub trait AnalogPin: Pin {
     /// Configure the pin for analog operation
     fn set_analog(&self, _: private::Internal);
+}
+
+/// Trait implemented by pins which can be used as Touchpad pins
+pub trait TouchPin: Pin {
+    /// Configure the pin for analog operation
+    fn set_touch(&self, _: private::Internal);
+
+    /// Reads the pin's touch measurement register
+    fn get_touch_measurement(&self, _: private::Internal) -> u16;
+
+    /// Maps the pin nr to the touch pad nr
+    fn get_touch_nr(&self, _: private::Internal) -> u8;
+
+    /// Set a pins touch threshold for interrupts.
+    fn set_threshold(&self, threshold: u16, _: private::Internal);
 }
 
 #[doc(hidden)]
@@ -596,6 +650,9 @@ pub trait IsInputPin: PinType {}
 pub trait IsAnalogPin: PinType {}
 
 #[doc(hidden)]
+pub trait IsTouchPin: PinType {}
+
+#[doc(hidden)]
 pub struct InputOutputPinType;
 
 #[doc(hidden)]
@@ -606,6 +663,9 @@ pub struct InputOutputAnalogPinType;
 
 #[doc(hidden)]
 pub struct InputOnlyAnalogPinType;
+
+#[doc(hidden)]
+pub struct InputOutputAnalogTouchPinType;
 
 impl PinType for InputOutputPinType {}
 impl IsOutputPin for InputOutputPinType {}
@@ -622,6 +682,12 @@ impl IsAnalogPin for InputOutputAnalogPinType {}
 impl PinType for InputOnlyAnalogPinType {}
 impl IsInputPin for InputOnlyAnalogPinType {}
 impl IsAnalogPin for InputOnlyAnalogPinType {}
+
+impl PinType for InputOutputAnalogTouchPinType {}
+impl IsOutputPin for InputOutputAnalogTouchPinType {}
+impl IsInputPin for InputOutputAnalogTouchPinType {}
+impl IsAnalogPin for InputOutputAnalogTouchPinType {}
+impl IsTouchPin for InputOutputAnalogTouchPinType {}
 
 /// GPIO pin
 pub struct GpioPin<const GPIONUM: u8>;
@@ -1158,6 +1224,29 @@ where
     }
 }
 
+#[cfg(touch)]
+impl<const GPIONUM: u8> TouchPin for GpioPin<GPIONUM>
+where
+    Self: GpioProperties,
+    <Self as GpioProperties>::PinType: IsTouchPin,
+{
+    fn set_touch(&self, _: private::Internal) {
+        crate::soc::gpio::internal_into_touch(GPIONUM);
+    }
+
+    fn get_touch_measurement(&self, _: private::Internal) -> u16 {
+        crate::soc::gpio::internal_get_touch_measurement(GPIONUM)
+    }
+
+    fn get_touch_nr(&self, _: private::Internal) -> u8 {
+        crate::soc::gpio::internal_get_touch_nr(GPIONUM)
+    }
+
+    fn set_threshold(&self, threshold: u16, _: private::Internal) {
+        crate::soc::gpio::internal_set_threshold(GPIONUM, threshold)
+    }
+}
+
 /// General Purpose Input/Output driver
 pub struct Io {
     _io_mux: IO_MUX,
@@ -1190,6 +1279,25 @@ impl Io {
         }
     }
 
+    /// Initialize the I/O driver without enabling the GPIO interrupt or
+    /// binding an interrupt handler to it.
+    ///
+    /// *Note:* You probably don't want to use this, it is intended to be used
+    /// in very specific use cases. Async GPIO functionality will not work
+    /// when instantiating `Io` using this constructor.
+    pub fn new_no_bind_interrupt(gpio: GPIO, io_mux: IO_MUX) -> Self {
+        let pins = gpio.pins();
+
+        Io {
+            _io_mux: io_mux,
+            pins,
+        }
+    }
+}
+
+impl crate::private::Sealed for Io {}
+
+impl InterruptConfigurable for Io {
     /// Install the given interrupt handler replacing any previously set
     /// handler.
     ///
@@ -1197,7 +1305,7 @@ impl Io {
     /// the internal async handler will run after. In that case it's
     /// important to not reset the interrupt status when mixing sync and
     /// async (i.e. using async wait) interrupt handling.
-    pub fn set_interrupt_handler(&mut self, handler: InterruptHandler) {
+    fn set_interrupt_handler(&mut self, handler: InterruptHandler) {
         critical_section::with(|cs| {
             crate::interrupt::enable(crate::peripherals::Interrupt::GPIO, handler.priority())
                 .unwrap();
@@ -1297,9 +1405,9 @@ macro_rules! gpio {
             )+
 
             /// Pins available on this chip
-            #[allow(missing_docs)]
             pub struct Pins {
                 $(
+                    /// GPIO pin number `$gpionum`.
                     pub [< gpio $gpionum >] : GpioPin<$gpionum>,
                 )+
             }
@@ -1330,7 +1438,7 @@ macro_rules! gpio {
 
             procmacros::make_gpio_enum_dispatch_macro!(
                 handle_gpio_output
-                { InputOutputAnalog, InputOutput, }
+                { InputOutputAnalogTouch, InputOutputAnalog, InputOutput, }
                 {
                     $(
                         $type,$gpionum
@@ -1340,7 +1448,7 @@ macro_rules! gpio {
 
             procmacros::make_gpio_enum_dispatch_macro!(
                 handle_gpio_input
-                { InputOutputAnalog, InputOutput, InputOnlyAnalog }
+                { InputOutputAnalogTouch, InputOutputAnalog, InputOutput, InputOnlyAnalog }
                 {
                     $(
                         $type,$gpionum
@@ -1577,6 +1685,156 @@ macro_rules! analog {
     }
 }
 
+/// normal touch pin initialization. This is separate from touch_common, as we
+/// need to handle some touch_pads differently
+#[doc(hidden)]
+#[macro_export]
+macro_rules! touch_into {
+    (
+        $( ( $touch_num:expr, $pin_num:expr, $rtc_pin:expr, $touch_thres_reg:expr, $touch_thres_field:expr , true ) )+
+        ---
+        $( ( $touch_numx:expr, $pin_numx:expr, $rtc_pinx:expr, $touch_thres_regx:expr , $touch_thres_fieldx:expr , false ) )*
+    ) => {
+        pub(crate) fn internal_into_touch(pin: u8) {
+            use $crate::peripherals::{GPIO, RTC_IO, SENS};
+
+            let rtcio = unsafe { &*RTC_IO::ptr() };
+            let sens = unsafe { &*SENS::ptr() };
+            let gpio = unsafe { &*GPIO::ptr() };
+
+            match pin {
+                $(
+                    $pin_num => {
+                        paste::paste! {
+                            // Pad to normal mode (not open-drain)
+                            gpio.pin($rtc_pin).write(|w| w.pad_driver().clear_bit());
+
+                            // clear output
+                            rtcio.enable_w1tc().write(|w| unsafe { w.enable_w1tc().bits(1 << $rtc_pin) });
+                            sens
+                                . $touch_thres_reg ()
+                                .write(|w| unsafe {
+                                    w. $touch_thres_field ().bits(
+                                        0b0 // Default: 0 for esp32 gets overridden later anyway.
+                                    )
+                                });
+
+                            rtcio.[< touch_pad $touch_num >]().write(|w| unsafe {
+                                w
+                                .xpd().set_bit()
+                                // clear input_enable
+                                .fun_ie().clear_bit()
+                                // Connect pin to analog / RTC module instead of standard GPIO
+                                .mux_sel().set_bit()
+                                // Disable pull-up and pull-down resistors on the pin
+                                .rue().clear_bit()
+                                .rde().clear_bit()
+                                .tie_opt().clear_bit()
+                                // Select function "RTC function 1" (GPIO) for analog use
+                                .fun_sel().bits(0b00)
+                            });
+
+                            sens.sar_touch_enable().modify(|r, w| unsafe {
+                                w
+                                // enable the pin
+                                .touch_pad_worken().bits(
+                                   r.touch_pad_worken().bits() | ( 1 << [< $touch_num >] )
+                                )
+                            });
+                        }
+                    }
+                )+
+
+                $(
+                    $pin_numx => {
+                        paste::paste! {
+                            // Pad to normal mode (not open-drain)
+                            gpio.pin($rtc_pinx).write(|w| w.pad_driver().clear_bit());
+
+                            // clear output
+                            rtcio.enable_w1tc().write(|w| unsafe { w.enable_w1tc().bits(1 << $rtc_pinx) });
+                            sens
+                                . $touch_thres_regx ()
+                                .write(|w| unsafe {
+                                    w. $touch_thres_fieldx ().bits(
+                                        0b0 // Default: 0 for esp32 gets overridden later anyway.
+                                    )
+                                });
+
+                            rtcio.[< touch_pad $touch_numx >]().write(|w|
+                                w
+                                .xpd().set_bit()
+                                .tie_opt().clear_bit()
+                            );
+
+                            sens.sar_touch_enable().modify(|r, w| unsafe {
+                                w
+                                // enable the pin
+                                .touch_pad_worken().bits(
+                                   r.touch_pad_worken().bits() | ( 1 << [< $touch_numx >] )
+                                )
+                            });
+                        }
+                    }
+                )*
+                _ => unreachable!(),
+            }
+        }
+    };
+}
+
+/// Common functionality for all touch pads
+#[doc(hidden)]
+#[macro_export]
+macro_rules! touch_common {
+    (
+        $(
+            (
+                $touch_num:expr, $pin_num:expr, $touch_out_reg:expr, $meas_field: expr, $touch_thres_reg:expr, $touch_thres_field:expr
+            )
+        )+
+    ) => {
+        pub(crate) fn internal_get_touch_measurement(pin: u8) -> u16 {
+            match pin {
+                $(
+                    $pin_num => {
+                        paste::paste! {
+                        unsafe { &* $crate::peripherals::SENS::ptr() }
+                            . $touch_out_reg ()
+                            .read()
+                            . $meas_field ()
+                            .bits()
+                        }
+                    },
+                )+
+                _ => unreachable!(),
+            }
+        }
+        pub(crate) fn internal_get_touch_nr(pin: u8) -> u8 {
+            match pin {
+                $($pin_num => $touch_num,)+
+                _ => unreachable!(),
+            }
+        }
+        pub(crate) fn internal_set_threshold(pin: u8, threshold: u16) {
+            match pin {
+                $(
+                    $pin_num => {
+                        paste::paste! {
+                            unsafe { &* $crate::peripherals::SENS::ptr() }
+                                . $touch_thres_reg ()
+                                .write(|w| unsafe {
+                                    w. $touch_thres_field ().bits(threshold)
+                                });
+                        }
+                    },
+                )+
+                _ => unreachable!(),
+            }
+        }
+    };
+}
+
 /// GPIO output driver.
 pub struct Output<'d, P> {
     pin: PeripheralRef<'d, P>,
@@ -1697,6 +1955,12 @@ where
     #[inline]
     pub fn clear_interrupt(&mut self) {
         self.pin.clear_interrupt(private::Internal);
+    }
+
+    /// Checks if the interrupt status bit for this Pin is set
+    #[inline]
+    pub fn is_interrupt_set(&self) -> bool {
+        self.pin.is_interrupt_set(private::Internal)
     }
 
     /// Enable as a wake-up source.

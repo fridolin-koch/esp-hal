@@ -11,8 +11,6 @@
 #![no_std]
 #![no_main]
 
-use defmt_rtt as _;
-use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
     gpio::Io,
@@ -22,6 +20,7 @@ use esp_hal::{
     uart::{UartRx, UartTx},
     Blocking,
 };
+use hil_test as _;
 use nb::block;
 
 struct Context {
@@ -37,8 +36,8 @@ impl Context {
 
         let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
-        let tx = UartTx::new(peripherals.UART0, &clocks, None, io.pins.gpio2).unwrap();
-        let rx = UartRx::new(peripherals.UART1, &clocks, None, io.pins.gpio3).unwrap();
+        let tx = UartTx::new(peripherals.UART0, &clocks, io.pins.gpio2).unwrap();
+        let rx = UartRx::new(peripherals.UART1, &clocks, io.pins.gpio3).unwrap();
 
         Context { tx, rx }
     }
@@ -66,5 +65,19 @@ mod tests {
         let read = block!(ctx.rx.read_byte());
 
         assert_eq!(read, Ok(0x42));
+    }
+
+    #[test]
+    #[timeout(3)]
+    fn test_send_receive_bytes(mut ctx: Context) {
+        let bytes = [0x42, 0x43, 0x44];
+        let mut buf = [0u8; 3];
+
+        ctx.tx.flush_tx().unwrap();
+        ctx.tx.write_bytes(&bytes).unwrap();
+
+        ctx.rx.read_bytes(&mut buf).unwrap();
+
+        assert_eq!(buf, bytes);
     }
 }

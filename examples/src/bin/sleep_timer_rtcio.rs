@@ -1,5 +1,11 @@
-//! Demonstrates deep sleep with timer, using GPIO2 (low) and GPIO3 (high) as
+//! Demonstrates deep sleep with timer, using RTC pins as
 //! wakeup.
+//!
+//! The following wiring is assumed for ESP32C3:
+//! - RTC wakeup pin => GPIO2 (low level)
+//! - RTC wakeup pin => GPIO3 (high level)
+//! The following wiring is assumed for ESP32S3:
+//! - RTC wakeup pin => GPIO18 (low level)
 
 //% CHIPS: esp32c3 esp32s3
 
@@ -35,7 +41,7 @@ fn main() -> ! {
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
     let mut io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
-    let mut rtc = Rtc::new(peripherals.LPWR, None);
+    let mut rtc = Rtc::new(peripherals.LPWR);
 
     println!("up and runnning!");
     let reason = get_reset_reason(Cpu::ProCpu).unwrap_or(SocResetReason::ChipPowerOn);
@@ -43,7 +49,7 @@ fn main() -> ! {
     let wake_reason = get_wakeup_cause();
     println!("wake reason: {:?}", wake_reason);
 
-    let mut delay = Delay::new(&clocks);
+    let delay = Delay::new(&clocks);
     let timer = TimerWakeupSource::new(Duration::from_secs(10));
 
     #[cfg(feature = "esp32c3")]
@@ -59,5 +65,5 @@ fn main() -> ! {
     let rtcio = RtcioWakeupSource::new(wakeup_pins);
     println!("sleeping!");
     delay.delay_millis(100);
-    rtc.sleep_deep(&[&timer, &rtcio], &mut delay);
+    rtc.sleep_deep(&[&timer, &rtcio]);
 }

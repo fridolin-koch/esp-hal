@@ -1,10 +1,11 @@
 //! This shows using Parallel IO to input 4 bit parallel data at 1MHz clock
 //! rate.
 //!
-//! Uses GPIO 1, 2, 3 and 4 as the data pins.
+//! The following wiring is assumed:
+//! - Data pins => GPIO1, GPIO2, GPIO3, and GPIO4.
 
 //% CHIPS: esp32c6 esp32h2
-//% FEATURES: async embassy embassy-time-timg0 embassy-generic-timers
+//% FEATURES: async embassy embassy-generic-timers
 
 #![no_std]
 #![no_main]
@@ -21,19 +22,19 @@ use esp_hal::{
     peripherals::Peripherals,
     prelude::*,
     system::SystemControl,
-    timer::timg::TimerGroup,
+    timer::systimer::{SystemTimer, Target},
 };
 use esp_println::println;
 
-#[main]
+#[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) {
     esp_println::println!("Init!");
     let peripherals = Peripherals::take();
     let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let timg0 = TimerGroup::new_async(peripherals.TIMG0, &clocks);
-    esp_hal_embassy::init(&clocks, timg0);
+    let systimer = SystemTimer::new(peripherals.SYSTIMER).split::<Target>();
+    esp_hal_embassy::init(&clocks, systimer.alarm0);
 
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
@@ -61,7 +62,11 @@ async fn main(_spawner: Spawner) {
     let buffer = rx_buffer;
     loop {
         parl_io_rx.read_dma_async(buffer).await.unwrap();
-        println!("Received: {:02x?} ...", &buffer[..30]);
+        println!(
+            "Received: {:02x?} ... {:02x?}",
+            &buffer[..30],
+            &buffer[(buffer.len() - 30)..]
+        );
 
         Timer::after(Duration::from_millis(500)).await;
     }

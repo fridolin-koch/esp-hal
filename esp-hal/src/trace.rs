@@ -1,7 +1,6 @@
-//! # RISC­V Trace Encoder (TRACE)
+//! # RISC-­V Trace Encoder (TRACE)
 //!
 //! ## Overview
-//!
 //! The high-performance CPU supports instruction trace interface through the
 //! trace encoder. The trace encoder connects to HP CPU’s instruction trace
 //! interface, compresses the information into smaller packets, and then stores
@@ -19,7 +18,7 @@
 //! That is where instruction trace comes in, which provides trace of the
 //! program execution.
 //!
-//! ## Example
+//! ## Examples
 //! ```rust, no_run
 #![doc = crate::before_snippet!()]
 //! # use esp_hal::trace::Trace;
@@ -43,13 +42,16 @@ use crate::{
 /// Errors returned from [Trace::stop_trace]
 #[derive(Debug, Clone, Copy)]
 pub enum Error {
+    /// Attempted to stop a trace which had not been started yet
     NotStarted,
 }
 
 /// Returned by [Trace::stop_trace]
 #[derive(Debug, Clone, Copy)]
 pub struct TraceResult {
+    /// Start index of the valid data
     pub valid_start_index: usize,
+    /// Length of the valid data
     pub valid_length: usize,
 }
 
@@ -67,6 +69,7 @@ where
     pub fn new(peripheral: impl Peripheral<P = T> + 'd) -> Self {
         crate::into_ref!(peripheral);
 
+        PeripheralClockControl::reset(crate::system::Peripheral::Trace0);
         PeripheralClockControl::enable(crate::system::Peripheral::Trace0);
 
         Self {
@@ -200,7 +203,9 @@ where
     }
 }
 
+/// Trace peripheral instance
 pub trait Instance: crate::private::Sealed {
+    /// Get a reference to the peripheral's underlying register block
     fn register_block(&self) -> &RegisterBlock;
 }
 

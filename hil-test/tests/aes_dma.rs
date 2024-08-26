@@ -5,8 +5,6 @@
 #![no_std]
 #![no_main]
 
-use defmt_rtt as _;
-use esp_backtrace as _;
 use esp_hal::{
     aes::{
         dma::{CipherMode, WithDmaAes},
@@ -16,8 +14,8 @@ use esp_hal::{
     dma::{Dma, DmaPriority},
     dma_buffers,
     peripherals::Peripherals,
-    prelude::*,
 };
+use hil_test as _;
 
 const DMA_BUFFER_SIZE: usize = 16;
 

@@ -1,18 +1,17 @@
 //! This shows how to transmit data continously via I2S.
 //!
-//! Pins used:
-//! BCLK    GPIO2
-//! WS      GPIO4
-//! DOUT    GPIO5
-//!
 //! Without an additional I2S sink device you can inspect the BCLK, WS
 //! and DOUT with a logic analyzer.
 //!
 //! You can also connect e.g. a PCM510x to hear an annoying loud sine tone (full
 //! scale), so turn down the volume before running this example.
 //!
-//! Wiring is like this:
+//! The following wiring is assumed:
+//! - BCLK => GPIO2
+//! - WS   => GPIO4
+//! - DOUT => GPIO5
 //!
+//! PCM510x:
 //! | Pin   | Connected to    |
 //! |-------|-----------------|
 //! | BCK   | GPIO1           |
@@ -27,7 +26,7 @@
 //! | XSMT  | +3V3            |
 
 //% CHIPS: esp32 esp32c3 esp32c6 esp32h2 esp32s2 esp32s3
-//% FEATURES: async embassy embassy-time-timg0 embassy-generic-timers
+//% FEATURES: async embassy embassy-generic-timers
 
 #![no_std]
 #![no_main]
@@ -55,15 +54,15 @@ const SINE: [i16; 64] = [
     -28897, -27244, -25329, -23169, -20787, -18204, -15446, -12539, -9511, -6392, -3211,
 ];
 
-#[main]
+#[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) {
     println!("Init!");
     let peripherals = Peripherals::take();
     let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let timg0 = TimerGroup::new_async(peripherals.TIMG0, &clocks);
-    esp_hal_embassy::init(&clocks, timg0);
+    let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
+    esp_hal_embassy::init(&clocks, timg0.timer0);
 
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 

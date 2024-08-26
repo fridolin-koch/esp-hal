@@ -1,6 +1,11 @@
-//! Connect a potentiometer to PIN2 and see the read values change when
+//! Connect a potentiometer to GPIO and see the read values change when
 //! rotating the shaft. Alternatively you could also connect the PIN to GND or
 //! 3V3 to see the maximum and minimum raw values read.
+//!
+//! The following wiring is assumed for ESP32S3:
+//! - Analog pin => GPIO3
+//! The following wiring is assumed for others:
+//! - Analog pin => GPIO2
 
 //% CHIPS: esp32c2 esp32c3 esp32c6 esp32s3
 
@@ -39,10 +44,10 @@ fn main() -> ! {
     // them. Note that only AdcCalLine returns readings in mV; the other two
     // return raw readings in some unspecified scale.
     //
-    //type AdcCal = ();
+    // type AdcCal = ();
     type AdcCal = esp_hal::analog::adc::AdcCalBasic<esp_hal::peripherals::ADC1>;
-    // type AdcCal = esp_hal::analog::adc::AdcCalLine<ADC1>;
-    // type AdcCal = esp_hal::analog::adc::AdcCalCurve<ADC1>;
+    // type AdcCal = esp_hal::analog::adc::AdcCalLine<esp_hal::peripherals::ADC1>;
+    // type AdcCal = esp_hal::analog::adc::AdcCalCurve<esp_hal::peripherals::ADC1>;
 
     let mut adc1_config = AdcConfig::new();
     let mut adc1_pin =

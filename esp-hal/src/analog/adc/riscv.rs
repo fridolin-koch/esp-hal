@@ -103,6 +103,7 @@ cfg_if::cfg_if! {
 /// The sampling/readout resolution of the ADC.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Resolution {
+    /// 12-bit resolution
     #[default]
     Resolution12Bit,
 }
@@ -407,6 +408,7 @@ where
         adc_instance: impl crate::peripheral::Peripheral<P = ADCI> + 'd,
         config: AdcConfig<ADCI>,
     ) -> Self {
+        PeripheralClockControl::reset(Peripheral::ApbSarAdc);
         PeripheralClockControl::enable(Peripheral::ApbSarAdc);
 
         unsafe { &*APB_SARADC::PTR }.ctrl().modify(|_, w| unsafe {

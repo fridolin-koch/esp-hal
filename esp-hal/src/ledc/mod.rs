@@ -1,26 +1,23 @@
 //! # LED Controller (LEDC)
 //!
-//! The LED control (LEDC) peripheral is primarily designed to control the
-//! intensity of LEDs, although it can also be used to generate PWM signals for
-//! other purposes. It has multiple channels which can generate independent
-//! waveforms that can be used, for example, to drive RGB LED devices.
+//! ## Overview
+//! The LEDC peripheral is primarily designed to control the intensity of LEDs,
+//! although it can also be used to generate PWM signals for other purposes. It
+//! has multiple channels which can generate independent waveforms that can be
+//! used, for example, to drive RGB LED devices.
 //!
 //! The PWM controller can automatically increase or decrease the duty cycle
 //! gradually, allowing for fades without any processor interference.
 //!
 //! ## Configuration
-//!
 //! Currently only supports fixed-frequency output. High Speed channels are
 //! available for the ESP32 only, while Low Speed channels are available for all
 //! supported chips.
 //!
-//! ### Examples
-//!
-//! #### Low Speed Channel
-//!
+//! ## Examples
+//! ### Low Speed Channel
 //! The following will configure the Low Speed Channel0 to 24kHz output with
 //! 10% duty using the ABPClock
-//!
 //! ```rust, no_run
 #![doc = crate::before_snippet!()]
 //! # use esp_hal::ledc::Ledc;
@@ -59,10 +56,9 @@
 //! # }
 //! ```
 //! 
-//! ## Unsupported
-//!
-//! - Source clock selection
-//! - Interrupts
+//! ## Implementation State
+//! - Source clock selection is not supported
+//! - Interrupts are not supported
 
 use self::{
     channel::Channel,
@@ -81,6 +77,7 @@ pub mod timer;
 /// Global slow clock source
 #[derive(PartialEq, Eq, Copy, Clone, Debug)]
 pub enum LSGlobalClkSource {
+    /// APB clock.
     APBClk,
 }
 
@@ -98,7 +95,9 @@ pub struct HighSpeed {}
 /// Used to specify LowSpeed Timer/Channel
 pub struct LowSpeed {}
 
+/// Trait representing the speed mode of a clock or peripheral.
 pub trait Speed {
+    /// Boolean constant indicating whether the speed is high-speed.
     const IS_HS: bool;
 }
 
@@ -115,9 +114,11 @@ impl<'d> Ledc<'d> {
     /// Return a new LEDC
     pub fn new(
         _instance: impl Peripheral<P = crate::peripherals::LEDC> + 'd,
-        clock_control_config: &'d Clocks,
+        clock_control_config: &'d Clocks<'d>,
     ) -> Self {
         crate::into_ref!(_instance);
+
+        PeripheralClockControl::reset(PeripheralEnable::Ledc);
         PeripheralClockControl::enable(PeripheralEnable::Ledc);
 
         let ledc = unsafe { &*crate::peripherals::LEDC::ptr() };
@@ -168,7 +169,7 @@ impl<'d> Ledc<'d> {
     }
 
     /// Return a new timer
-    pub fn get_timer<S: TimerSpeed>(&self, number: timer::Number) -> Timer<S> {
+    pub fn get_timer<S: TimerSpeed>(&self, number: timer::Number) -> Timer<'d, S> {
         Timer::new(self.ledc, self.clock_control_config, number)
     }
 
@@ -177,7 +178,7 @@ impl<'d> Ledc<'d> {
         &self,
         number: channel::Number,
         output_pin: impl Peripheral<P = O> + 'd,
-    ) -> Channel<S, O> {
+    ) -> Channel<'d, S, O> {
         Channel::new(number, output_pin)
     }
 }

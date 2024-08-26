@@ -1,12 +1,16 @@
 //! # Timer Group (TIMG)
 //!
+//! ## Overview
 //! The Timer Group (TIMG) peripherals contain one or more general-purpose
 //! timers, plus one or more watchdog timers.
 //!
 //! The general-purpose timers are based on a 16-bit pre-scaler and a 54-bit
-//! auto-reload-capable up-down counter. The timers have configurable alarms,
-//! which are triggered when the internal counter of the timers reaches a
-//! specific target value. The timers are clocked using the APB clock source.
+//! auto-reload-capable up-down counter.
+//!
+//! ## Configuration
+//! The timers have configurable alarms, which are triggered when the internal
+//! counter of the timers reaches a specific target value. The timers are
+//! clocked using the APB clock source.
 //!
 //! Typically, a general-purpose timer can be used in scenarios such as:
 //!
@@ -14,18 +18,15 @@
 //! - Generate one-shot alarms; trigger events once
 //! - Free-running; fetching a high-resolution timestamp on demand
 //!
-//! ## Usage
 //!
-//! ### Examples
-//!
-//! #### General-purpose Timer
-//!
+//! ## Examples
+//! ### General-purpose Timer
 //! ```rust, no_run
 #![doc = crate::before_snippet!()]
 //! # use esp_hal::timer::timg::TimerGroup;
 //! # use crate::esp_hal::prelude::_esp_hal_timer_Timer;
 //! # use esp_hal::prelude::*;
-//! let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks, None);
+//! let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
 //! let timer0 = timg0.timer0;
 //!
 //! // Get the current timestamp, in microseconds:
@@ -46,7 +47,7 @@
 #![doc = crate::before_snippet!()]
 //! # use esp_hal::timer::timg::TimerGroup;
 //! # use esp_hal::prelude::*;
-//! let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks, None);
+//! let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
 //! let mut wdt = timg0.wdt;
 //!
 //! wdt.set_timeout(5_000.millis());
@@ -79,20 +80,9 @@ use crate::{
     system::{Peripheral as PeripheralEnable, PeripheralClockControl},
     Async,
     Blocking,
+    InterruptConfigurable,
     Mode,
 };
-
-/// Interrupts which can be registered in [Blocking] mode
-#[derive(Debug, Default)]
-pub struct TimerInterrupts {
-    /// Interrupt for [`Timer0`]
-    pub timer0: Option<InterruptHandler>,
-    #[cfg(timg_timer1)]
-    /// Interrupt for [`Timer1`]
-    pub timer1: Option<InterruptHandler>,
-    /// WDT Interrupt
-    pub wdt: Option<InterruptHandler>,
-}
 
 /// A timer group consisting of up to 2 timers (chip dependent) and a watchdog
 /// timer.
@@ -116,6 +106,8 @@ pub trait TimerGroupInstance {
     fn id() -> u8;
     fn register_block() -> *const RegisterBlock;
     fn configure_src_clk();
+    fn enable_peripheral();
+    fn reset_peripheral();
     fn configure_wdt_src_clk();
 }
 
@@ -152,6 +144,14 @@ impl TimerGroupInstance for TIMG0 {
     #[cfg(esp32)]
     fn configure_src_clk() {
         // ESP32 has only APB clock source, do nothing
+    }
+
+    fn enable_peripheral() {
+        crate::system::PeripheralClockControl::enable(crate::system::Peripheral::Timg0)
+    }
+
+    fn reset_peripheral() {
+        // for TIMG0 do nothing for now because the reset breaks `current_time`
     }
 
     #[inline(always)]
@@ -217,6 +217,16 @@ impl TimerGroupInstance for TIMG1 {
     }
 
     #[inline(always)]
+    fn enable_peripheral() {
+        crate::system::PeripheralClockControl::enable(crate::system::Peripheral::Timg1)
+    }
+
+    #[inline(always)]
+    fn reset_peripheral() {
+        crate::system::PeripheralClockControl::reset(crate::system::Peripheral::Timg1)
+    }
+
+    #[inline(always)]
     #[cfg(any(esp32c6, esp32h2))]
     fn configure_wdt_src_clk() {
         unsafe { &*crate::peripherals::PCR::PTR }
@@ -237,12 +247,11 @@ where
     T: TimerGroupInstance,
 {
     /// Construct a new instance of [`TimerGroup`] in blocking mode
-    pub fn new(
-        _timer_group: impl Peripheral<P = T> + 'd,
-        clocks: &Clocks,
-        isr: Option<TimerInterrupts>,
-    ) -> Self {
+    pub fn new(_timer_group: impl Peripheral<P = T> + 'd, clocks: &Clocks<'d>) -> Self {
         crate::into_ref!(_timer_group);
+
+        T::reset_peripheral();
+        T::enable_peripheral();
 
         T::configure_src_clk();
 
@@ -265,48 +274,6 @@ where
             clocks.apb_clock,
         );
 
-        if let Some(isr) = isr {
-            if let Some(handler) = isr.timer0 {
-                let interrupt = match T::id() {
-                    0 => Interrupt::TG0_T0_LEVEL,
-                    #[cfg(timg1)]
-                    1 => Interrupt::TG1_T0_LEVEL,
-                    _ => unreachable!(),
-                };
-                unsafe {
-                    interrupt::bind_interrupt(interrupt, handler.handler());
-                    interrupt::enable(interrupt, handler.priority()).unwrap();
-                }
-            }
-
-            #[cfg(timg_timer1)]
-            if let Some(handler) = isr.timer1 {
-                let interrupt = match T::id() {
-                    0 => Interrupt::TG0_T1_LEVEL,
-                    #[cfg(timg1)]
-                    1 => Interrupt::TG1_T1_LEVEL,
-                    _ => unreachable!(),
-                };
-                unsafe {
-                    interrupt::bind_interrupt(interrupt, handler.handler());
-                    interrupt::enable(interrupt, handler.priority()).unwrap();
-                }
-            }
-
-            if let Some(handler) = isr.wdt {
-                let interrupt = match T::id() {
-                    0 => Interrupt::TG0_WDT_LEVEL,
-                    #[cfg(timg1)]
-                    1 => Interrupt::TG1_WDT_LEVEL,
-                    _ => unreachable!(),
-                };
-                unsafe {
-                    interrupt::bind_interrupt(interrupt, handler.handler());
-                    interrupt::enable(interrupt, handler.priority()).unwrap();
-                }
-            }
-        }
-
         Self {
             _timer_group,
             timer0,
@@ -322,8 +289,11 @@ where
     T: TimerGroupInstance,
 {
     /// Construct a new instance of [`TimerGroup`] in asynchronous mode
-    pub fn new_async(_timer_group: impl Peripheral<P = T> + 'd, clocks: &Clocks) -> Self {
+    pub fn new_async(_timer_group: impl Peripheral<P = T> + 'd, clocks: &Clocks<'d>) -> Self {
         crate::into_ref!(_timer_group);
+
+        T::reset_peripheral();
+        T::enable_peripheral();
 
         T::configure_src_clk();
 
@@ -399,7 +369,7 @@ where
         }
     }
 
-    /// Block until the timer has elasped.
+    /// Block until the timer has elapsed.
     pub fn wait(&mut self) {
         while !self.has_elapsed() {}
     }
@@ -517,15 +487,40 @@ where
     }
 
     fn enable_interrupt(&self, state: bool) {
+        // always use level interrupt
+        #[cfg(any(esp32, esp32s2))]
+        self.register_block()
+            .t(self.timer_number().into())
+            .config()
+            .modify(|_, w| w.level_int_en().set_bit());
+
         self.register_block()
             .int_ena_timers()
-            .write(|w| w.t(self.timer_number()).bit(state));
+            .modify(|_, w| w.t(self.timer_number()).bit(state));
     }
 
     fn clear_interrupt(&self) {
         self.register_block()
             .int_clr_timers()
             .write(|w| w.t(self.timer_number()).clear_bit_by_one());
+    }
+
+    fn set_interrupt_handler(&self, handler: InterruptHandler) {
+        let interrupt = match (self.timer_group(), self.timer_number()) {
+            (0, 0) => Interrupt::TG0_T0_LEVEL,
+            #[cfg(timg_timer1)]
+            (0, 1) => Interrupt::TG0_T1_LEVEL,
+            #[cfg(timg1)]
+            (1, 0) => Interrupt::TG1_T0_LEVEL,
+            #[cfg(all(timg_timer1, timg1))]
+            (1, 1) => Interrupt::TG1_T1_LEVEL,
+            _ => unreachable!(),
+        };
+
+        unsafe {
+            interrupt::bind_interrupt(interrupt, handler.handler());
+        }
+        interrupt::enable(interrupt, handler.priority()).unwrap();
     }
 
     fn is_interrupt_set(&self) -> bool {
@@ -544,9 +539,33 @@ where
     }
 }
 
+impl<T> InterruptConfigurable for Timer<T, Blocking>
+where
+    T: Instance,
+{
+    fn set_interrupt_handler(&mut self, handler: interrupt::InterruptHandler) {
+        <Self as super::Timer>::set_interrupt_handler(self, handler);
+    }
+}
+
+impl<T, DM> Peripheral for Timer<T, DM>
+where
+    T: Instance,
+    DM: Mode,
+{
+    type P = Self;
+
+    #[inline]
+    unsafe fn clone_unchecked(&mut self) -> Self::P {
+        core::ptr::read(self as *const _)
+    }
+}
+
 #[doc(hidden)]
 pub trait Instance: Sealed + Enable {
     fn register_block(&self) -> &RegisterBlock;
+
+    fn timer_group(&self) -> u8;
 
     fn timer_number(&self) -> u8;
 
@@ -630,6 +649,10 @@ where
 {
     fn register_block(&self) -> &RegisterBlock {
         unsafe { &*TG::register_block() }
+    }
+
+    fn timer_group(&self) -> u8 {
+        TG::id()
     }
 
     fn timer_number(&self) -> u8 {
@@ -978,6 +1001,31 @@ where
         reg_block
             .wdtwprotect()
             .write(|w| unsafe { w.wdt_wkey().bits(0u32) });
+    }
+}
+
+impl<TG, DM> crate::private::Sealed for Wdt<TG, DM>
+where
+    TG: TimerGroupInstance,
+    DM: Mode,
+{
+}
+
+impl<TG> InterruptConfigurable for Wdt<TG, Blocking>
+where
+    TG: TimerGroupInstance,
+{
+    fn set_interrupt_handler(&mut self, handler: interrupt::InterruptHandler) {
+        let interrupt = match TG::id() {
+            0 => Interrupt::TG0_WDT_LEVEL,
+            #[cfg(timg1)]
+            1 => Interrupt::TG1_WDT_LEVEL,
+            _ => unreachable!(),
+        };
+        unsafe {
+            interrupt::bind_interrupt(interrupt, handler.handler());
+            interrupt::enable(interrupt, handler.priority()).unwrap();
+        }
     }
 }
 

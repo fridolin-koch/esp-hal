@@ -2,21 +2,21 @@
 //!
 //! This example reads a JPEG from an OV2640 and writes it to the console as hex.
 //!
-//! Pins used:
-//! SIOD      GPIO4
-//! SIOC      GPIO5
-//! XCLK      GPIO15
-//! VSYNC     GPIO6
-//! HREF      GPIO7
-//! PCLK      GPIO13
-//! D2        GPIO11
-//! D3        GPIO9
-//! D4        GPIO8
-//! D5        GPIO10
-//! D6        GPIO12
-//! D7        GPIO18
-//! D8        GPIO17
-//! D9        GPIO16
+//! The following wiring is assumed:
+//! - SIOD  => GPIO4
+//! - SIOC  => GPIO5
+//! - XCLK  => GPIO15
+//! - VSYNC => GPIO6
+//! - HREF  => GPIO7
+//! - PCLK  => GPIO13
+//! - D2    => GPIO11
+//! - D3    => GPIO9
+//! - D4    => GPIO8
+//! - D5    => GPIO10
+//! - D6    => GPIO12
+//! - D7    => GPIO18
+//! - D8    => GPIO17
+//! - D9    => GPIO16
 
 //% CHIPS: esp32s3
 
@@ -95,14 +95,7 @@ fn main() -> ! {
 
     delay.delay_millis(500u32);
 
-    let i2c = I2C::new(
-        peripherals.I2C0,
-        cam_siod,
-        cam_sioc,
-        100u32.kHz(),
-        &clocks,
-        None,
-    );
+    let i2c = I2C::new(peripherals.I2C0, cam_siod, cam_sioc, 100u32.kHz(), &clocks);
 
     let mut sccb = Sccb::new(i2c);
 

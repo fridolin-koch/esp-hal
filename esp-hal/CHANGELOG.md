@@ -8,6 +8,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
+- Introduce DMA buffer objects (#1856)
+- Added new `Io::new_no_bind_interrupt` constructor (#1861)
+- Added touch pad support for esp32 (#1873, #1956)
+- Allow configuration of period updating method for MCPWM timers (#1898)
+- Add self-testing mode for TWAI peripheral. (#1929)
+- Added a `PeripheralClockControl::reset` to the driver constructors where missing (#1893)
+- Added `digest::Digest` implementation to SHA (#1908)
+- Added `debugger::debugger_connected`. (#1961)
+- DMA: don't require `Sealed` to implement `ReadBuffer` and `WriteBuffer` (#1921)
+- Allow DMA to/from psram for esp32s3 (#1827)
+
+### Changed
+
+- Peripheral driver constructors don't take `InterruptHandler`s anymore. Use `set_interrupt_handler` to explicitly set the interrupt handler now. (#1819)
+- Migrate SPI driver to use DMA buffer objects (#1856)
+- Use the peripheral ref pattern for `OneShotTimer` and `PeriodicTimer` (#1855)
+- Improve SYSTIMER API (#1871)
+- DMA buffers now don't require a static lifetime. Make sure to never `mem::forget` an in-progress DMA transfer (consider using `#[deny(clippy::mem_forget)]`) (#1837)
+- SHA driver now use specific structs for the hashing algorithm instead of a parameter. (#1908)
+- Remove `fn free(self)` in HMAC which goes against esp-hal API guidelines (#1972)
+
+### Fixed
+
+- Improve error detection in the I2C driver (#1847)
+- Fix I2S async-tx (#1833)
+- Fix PARL_IO async-rx (#1851)
+- SPI: Clear DMA interrupts before (not after) DMA starts (#1859)
+- SPI: disable and re-enable MISO and MOSI in `start_transfer_dma`, `start_read_bytes_dma` and `start_write_bytes_dma` accordingly (#1894)
+- TWAI: GPIO pins are not configured as input and output (#1906)
+- ESP32C6: Make ADC usable after TRNG deinicialization (#1945)
+- We should no longer generate 1GB .elf files for ESP32C2 and ESP32C3 (#1962)
+- Reset peripherals in driver constructors where missing (#1893, #1961)
+- Fixed ESP32-S2 systimer interrupts (#1979)
+
+### Removed
+
+- This package no longer re-exports the `esp_hal_procmacros::main` macro (#1828)
+- The `AesFlavour` trait no longer has the `ENCRYPT_MODE`/`DECRYPT_MODE` associated constants (#1849)
+- Removed `FlashSafeDma` (#1856)
+- Remove redundant WithDmaSpi traits (#1975)
+
+## [0.19.0] - 2024-07-15
+
+### Added
+
 - uart: Added `with_cts`/`with_rts`s methods to configure CTS, and RTS pins (#1592)
 - uart: Constructors now require TX and RX pins (#1592)
 - uart: Added `Uart::new_with_default_pins` constructor (#1592)
@@ -17,10 +63,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add DmaTransactionTxOwned, DmaTransactionRxOwned, DmaTransactionTxRxOwned, functions to do owning transfers added to SPI half-duplex (#1672)
 - uart: Implement `embedded_io::ReadReady` for `Uart` and `UartRx` (#1702)
 - ESP32-S3: Expose optional HSYNC input in LCD_CAM (#1707)
+- ESP32-S3: Add async support to the LCD_CAM I8080 driver (#1834)
 - ESP32-C6: Support lp-core as wake-up source (#1723)
 - Add support for GPIO wake-up source (#1724)
+- gpio: add DummyPin (#1769)
 - dma: add Mem2Mem to support memory to memory transfer (#1738)
 - Add `uart` wake source (#1727)
+- `#[ram(persistent)]` option to replace the unsound `uninitialized` option (#1677)
+- uart: Make `rx_timeout` optional in Config struct (#1759)
+- Add interrupt related functions to `PeriodicTimer`/`OneShotTimer`, added `ErasedTimer` (#1753)
+- Added blocking `read_bytes` method to `Uart` and `UartRx` (#1784)
+- Add method to expose `InputPin::is_interrupt_set` in `Input<InputPin>` for use in interrupt handlers (#1829)
 
 ### Fixed
 
@@ -29,6 +82,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix `sleep_light` for ESP32-C6 (#1720)
 - ROM Functions: Fix address of `ets_update_cpu_frequency_rom` (#1722)
 - Fix `regi2c_*` functions for `esp32h2` (#1737)
+- Improved `#[ram(zeroed)]` soundness by adding a `bytemuck::Zeroable` type bound (#1677)
+- EESP32-S2 / ESP32-S3: Fix UsbDm and UsbDp for Gpio19 and Gpio20
+- Fix reading/writing small buffers via SPI master async dma (#1760)
+- Remove unnecessary delay in rtc_ctnl (#1794)
 
 ### Changed
 
@@ -37,11 +94,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Improved interrupt latency on RISC-V based chips (#1679)
 - `esp_wifi::initialize` no longer requires running maximum CPU clock, instead check it runs above 80MHz. (#1688)
 - Move DMA descriptors from DMA Channel to each individual peripheral driver. (#1719)
+- Allow users to easily name DMA channels (#1770)
+- Support DMA chunk sizes other than the default 4092 (#1758)
 - Improved interrupt latency on Xtensa based chips (#1735)
+- Improve PCNT api (#1765)
 
 ### Removed
+
 - uart: Removed `configure_pins` methods (#1592)
 - Removed `DmaError::Exhausted` error by improving the implementation of the `pop` function (#1664)
+- Unsound `#[ram(uninitialized)]` option in favor of the new `persistent` option (#1677)
 
 ## [0.18.0] - 2024-06-04
 
@@ -225,6 +287,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Auto detect crystal frequency based on `RtcClock::estimate_xtal_frequency()` (#1165)
 - ESP32-S3: Configure 32k ICACHE (#1169)
 - Lift the minimal buffer size requirement for I2S (#1189)
+- Replaced `SystemTimer::TICKS_PER_SEC` with `SystemTimer::ticks_per_sec()` (#1981)
 
 ### Removed
 
@@ -619,7 +682,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0] - 2022-08-05
 
-[Unreleased]: https://github.com/esp-rs/esp-hal/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/esp-rs/esp-hal/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/esp-rs/esp-hal/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/esp-rs/esp-hal/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/esp-rs/esp-hal/compare/v0.16.1...v0.17.0
 [0.16.1]: https://github.com/esp-rs/esp-hal/compare/v0.16.0...v0.16.1

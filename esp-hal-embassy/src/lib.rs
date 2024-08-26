@@ -36,69 +36,116 @@
 // MUST be the first module
 mod fmt;
 
-use core::cell::Cell;
-
-use embassy_time_driver::{AlarmHandle, Driver};
-use esp_hal::clock::Clocks;
+#[cfg(not(feature = "esp32"))]
+use esp_hal::timer::systimer::Alarm;
+use esp_hal::{
+    clock::Clocks,
+    timer::{timg::Timer as TimgTimer, ErasedTimer},
+};
+pub use macros::main;
 
 #[cfg(feature = "executors")]
 pub use self::executor::{Executor, InterruptExecutor};
-use self::time_driver::{EmbassyTimer, TimerType};
+use self::time_driver::{EmbassyTimer, Timer};
 
 #[cfg(feature = "executors")]
 mod executor;
 mod time_driver;
 
-/// Initialize embassy
-pub fn init(clocks: &Clocks, time_driver: TimerType) {
-    EmbassyTimer::init(clocks, time_driver)
+macro_rules! mk_static {
+    ($t:ty,$val:expr) => {{
+        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
+        #[deny(unused_attributes)]
+        let x = STATIC_CELL.uninit().write(($val));
+        x
+    }};
 }
 
-#[allow(clippy::type_complexity)]
-pub(crate) struct AlarmState {
-    pub callback: Cell<Option<(fn(*mut ()), *mut ())>>,
-    pub allocated: Cell<bool>,
+/// A trait to allow better UX for initializing the timers.
+///
+/// This trait is meant to be used only for the `init` function.
+/// Calling `timers()` multiple times may panic.
+pub trait TimerCollection {
+    /// Returns the timers as a slice.
+    fn timers(self) -> &'static mut [Timer];
 }
 
-unsafe impl Send for AlarmState {}
+/// Helper trait to reduce boilerplate.
+///
+/// We can't blanket-implement for `Into<ErasedTimer>` because of possible
+/// conflicting implementations.
+trait IntoErasedTimer: Into<ErasedTimer> {}
 
-impl AlarmState {
-    pub const fn new() -> Self {
-        Self {
-            callback: Cell::new(None),
-            allocated: Cell::new(false),
-        }
+impl IntoErasedTimer for ErasedTimer {}
+
+impl<T, DM> IntoErasedTimer for TimgTimer<T, DM>
+where
+    DM: esp_hal::Mode,
+    Self: Into<ErasedTimer>,
+{
+}
+
+#[cfg(not(feature = "esp32"))]
+impl<T, DM, COMP, UNIT> IntoErasedTimer for Alarm<'_, T, DM, COMP, UNIT>
+where
+    DM: esp_hal::Mode,
+    Self: Into<ErasedTimer>,
+{
+}
+
+impl<T> TimerCollection for T
+where
+    T: IntoErasedTimer,
+{
+    fn timers(self) -> &'static mut [Timer] {
+        Timer::new(self.into()).timers()
     }
 }
 
-impl Driver for EmbassyTimer {
-    fn now(&self) -> u64 {
-        EmbassyTimer::now()
+impl TimerCollection for Timer {
+    fn timers(self) -> &'static mut [Timer] {
+        let timers = mk_static!([Timer; 1], [self]);
+        timers.timers()
     }
+}
 
-    unsafe fn allocate_alarm(&self) -> Option<AlarmHandle> {
-        critical_section::with(|cs| {
-            for (i, alarm) in self.alarms.borrow(cs).iter().enumerate() {
-                if !alarm.allocated.get() {
-                    // set alarm so it is not overwritten
-                    alarm.allocated.set(true);
-                    self.on_alarm_allocated(i);
-                    return Some(AlarmHandle::new(i as u8));
-                }
-            }
-            None
-        })
+impl TimerCollection for &'static mut [Timer] {
+    fn timers(self) -> &'static mut [Timer] {
+        self
     }
+}
 
-    fn set_alarm_callback(&self, alarm: AlarmHandle, callback: fn(*mut ()), ctx: *mut ()) {
-        let n = alarm.id() as usize;
-        critical_section::with(|cs| {
-            let alarm = &self.alarms.borrow(cs)[n];
-            alarm.callback.set(Some((callback, ctx)));
-        })
+impl<const N: usize> TimerCollection for &'static mut [Timer; N] {
+    fn timers(self) -> &'static mut [Timer] {
+        self.as_mut()
     }
+}
 
-    fn set_alarm(&self, alarm: AlarmHandle, timestamp: u64) -> bool {
-        self.set_alarm(alarm, timestamp)
-    }
+/// Initialize embassy.
+///
+/// Call this as soon as possible, before the first timer-related operation.
+///
+/// The time driver can be one of a number of different options:
+///
+/// - A timg `Timer` instance
+/// - A systimer `Alarm` instance
+/// - An `ErasedTimer` instance
+/// - A `OneShotTimer` instance
+/// - A mutable static slice of `OneShotTimer` instances
+/// - A mutable static array of `OneShotTimer` instances
+///
+/// # Examples
+///
+/// ```rust, no_run
+#[doc = esp_hal::before_snippet!()]
+/// use esp_hal::timg::TimerGroup;
+///
+/// let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
+/// esp_hal_embassy::init(&clocks, timg0.timer0);
+///
+/// // ... now you can spawn embassy tasks or use `Timer::after` etc.
+/// # }
+/// ```
+pub fn init(clocks: &Clocks, time_driver: impl TimerCollection) {
+    EmbassyTimer::init(clocks, time_driver.timers())
 }

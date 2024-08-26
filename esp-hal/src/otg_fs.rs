@@ -1,10 +1,12 @@
-//! # USB OTG full-speed peripheral
+//! # USB On-The-Go (USB OTG)
 //!
 //! ## Overview
-//! The USB OTG Full-speed peripheral driver provides support for the USB
-//! On-The-Go (OTG) full-speed functionality on ESP chips, allows communication
+//! The USB OTG Full-speed (FS) peripheral allows communication
 //! with USB devices using either blocking (usb-device) or asynchronous
 //! (embassy-usb) APIs.
+//!
+//! It can operate as either a USB Host or Device, and supports full-speed (FS)
+//! and low-speed (LS) data rates of the USB 2.0 specification.
 //!
 //! The blocking driver uses the `esp_synopsys_usb_otg` crate, which provides
 //! the `USB bus` implementation and `USB peripheral traits`.
@@ -15,6 +17,7 @@
 //! The module also relies on other peripheral modules, such as `GPIO`,
 //! `system`, and `clock control`, to configure and enable the `USB` peripheral.
 //!
+//! ## Configuration
 //! To use the USB OTG Full-speed peripheral driver, you need to initialize the
 //! peripheral and configure its settings. The [`Usb`] struct represents the USB
 //! peripheral and requires the GPIO pins that implement [`UsbDp`], and
@@ -23,6 +26,15 @@
 //! The returned `Usb` instance can be used with the `usb-device` crate, or it
 //! can be further configured with [`asynch::Driver`] to be used with the
 //! `embassy-usb` crate.
+//!
+//! ## Examples
+//! Visit the [USB Serial] example for an example of using the USB OTG
+//! peripheral.
+//!
+//! [USB Serial]: https://github.com/esp-rs/esp-hal/blob/main/examples/src/bin/usb_serial.rs
+//!
+//! ## Implementation State
+//! - Low-speed (LS) is not supported.
 
 pub use esp_synopsys_usb_otg::UsbBus;
 use esp_synopsys_usb_otg::UsbPeripheral;
@@ -35,16 +47,20 @@ use crate::{
 };
 
 #[doc(hidden)]
+/// Trait representing the USB D+ (data plus) pin.
 pub trait UsbDp: crate::private::Sealed {}
 
 #[doc(hidden)]
+/// Trait representing the USB D- (data minus) pin.
 pub trait UsbDm: crate::private::Sealed {}
 
+/// USB peripheral.
 pub struct Usb<'d> {
     _usb0: PeripheralRef<'d, peripherals::USB0>,
 }
 
 impl<'d> Usb<'d> {
+    /// Creates a new `Usb` instance.
     pub fn new<P, M>(
         usb0: impl Peripheral<P = peripherals::USB0> + 'd,
         _usb_dp: impl Peripheral<P = P> + 'd,
@@ -54,6 +70,7 @@ impl<'d> Usb<'d> {
         P: UsbDp + Send + Sync,
         M: UsbDm + Send + Sync,
     {
+        PeripheralClockControl::reset(PeripheralEnable::Usb);
         PeripheralClockControl::enable(PeripheralEnable::Usb);
 
         Self {
@@ -114,7 +131,7 @@ unsafe impl<'d> UsbPeripheral for Usb<'d> {
         80_000_000
     }
 }
-
+/// Async functionality
 #[cfg(feature = "async")]
 pub mod asynch {
     use embassy_usb_driver::{
@@ -164,6 +181,7 @@ pub mod asynch {
         ///
         /// * `ep_out_buffer` - An internal buffer used to temporarily store
         ///   received packets.
+        ///
         /// Must be large enough to fit all OUT endpoint max packet sizes.
         /// Endpoint allocation will fail if it is too small.
         pub fn new(_peri: Usb<'d>, ep_out_buffer: &'d mut [u8], config: Config) -> Self {

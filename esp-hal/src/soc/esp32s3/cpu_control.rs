@@ -6,8 +6,7 @@
 //! and managing the APP (second) CPU core on the `ESP32-S3` chip. It is used to
 //! start and stop program execution on the APP core.
 //!
-//! ## Example
-//!
+//! ## Examples
 //! ```rust, no_run
 #![doc = crate::before_snippet!()]
 //! # use esp_hal::delay::Delay;
@@ -84,6 +83,12 @@ pub struct Stack<const SIZE: usize> {
     pub mem: MaybeUninit<[u8; SIZE]>,
 }
 
+impl<const SIZE: usize> Default for Stack<SIZE> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[allow(clippy::len_without_is_empty)]
 impl<const SIZE: usize> Stack<SIZE> {
     /// Construct a stack of length SIZE, uninitialized
@@ -95,14 +100,17 @@ impl<const SIZE: usize> Stack<SIZE> {
         }
     }
 
+    /// Returns the length of the stack in bytes.
     pub const fn len(&self) -> usize {
         SIZE
     }
 
+    /// Returns a mutable pointer to the bottom of the stack.
     pub fn bottom(&mut self) -> *mut u32 {
         self.mem.as_mut_ptr() as *mut u32
     }
 
+    /// Returns a mutable pointer to the top of the stack.
     pub fn top(&mut self) -> *mut u32 {
         unsafe { self.bottom().add(SIZE / 4) }
     }
@@ -127,9 +135,11 @@ impl<'a> Drop for AppCoreGuard<'a> {
     }
 }
 
+/// Represents errors that can occur while working with the core.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Error {
+    /// The core is already running.
     CoreAlreadyRunning,
 }
 
@@ -163,6 +173,7 @@ unsafe fn internal_park_core(core: Cpu) {
 }
 
 impl<'d> CpuControl<'d> {
+    /// Creates a new instance of `CpuControl`.
     pub fn new(cpu_control: impl Peripheral<P = CPU_CTRL> + 'd) -> CpuControl<'d> {
         crate::into_ref!(cpu_control);
 

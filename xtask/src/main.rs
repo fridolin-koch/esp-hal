@@ -5,13 +5,13 @@ use std::{
     process::Command,
 };
 
-use anyhow::{bail, Result};
+use anyhow::{bail, ensure, Context as _, Result};
 use clap::{Args, Parser};
+use esp_metadata::{Arch, Chip, Config};
 use minijinja::Value;
 use strum::IntoEnumIterator;
 use xtask::{
     cargo::{CargoAction, CargoArgsBuilder},
-    Chip,
     Metadata,
     Package,
     Version,
@@ -68,6 +68,9 @@ struct TestArgs {
     /// Optional test to act on (all tests used if omitted)
     #[arg(short = 't', long)]
     test: Option<String>,
+    /// Repeat the tests for a specific number of times.
+    #[arg(long)]
+    repeat: Option<usize>,
 }
 
 #[derive(Debug, Args)]
@@ -126,7 +129,15 @@ struct GenerateEfuseFieldsArgs {
 }
 
 #[derive(Debug, Args)]
-struct LintPackagesArgs {}
+struct LintPackagesArgs {
+    /// Package(s) to target.
+    #[arg(value_enum, default_values_t = Package::iter())]
+    packages: Vec<Package>,
+
+    /// Lint for a specific chip
+    #[arg(long, value_enum, default_values_t = Chip::iter())]
+    chips: Vec<Chip>,
+}
 
 #[derive(Debug, Args)]
 struct RunElfArgs {
@@ -145,8 +156,7 @@ fn main() -> Result<()> {
         .filter_module("xtask", log::LevelFilter::Info)
         .init();
 
-    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace = workspace.parent().unwrap().canonicalize()?;
+    let workspace = std::env::current_dir()?;
 
     match Cli::parse() {
         Cli::BuildDocumentation(args) => build_documentation(&workspace, args),
@@ -204,7 +214,7 @@ fn examples(workspace: &Path, mut args: ExampleArgs, action: CargoAction) -> Res
         .collect::<Vec<_>>();
 
     // Sort all examples by name:
-    examples.sort_by(|a, b| a.name().cmp(&b.name()));
+    examples.sort_by_key(|a| a.name());
 
     // Execute the specified action:
     match action {
@@ -215,16 +225,17 @@ fn examples(workspace: &Path, mut args: ExampleArgs, action: CargoAction) -> Res
 
 fn build_examples(args: ExampleArgs, examples: Vec<Metadata>, package_path: &Path) -> Result<()> {
     // Determine the appropriate build target for the given package and chip:
-    let target = target_triple(&args.package, &args.chip)?;
+    let target = target_triple(args.package, &args.chip)?;
 
     if let Some(example) = examples.iter().find(|ex| Some(ex.name()) == args.example) {
         // Attempt to build only the specified example:
         xtask::execute_app(
-            &package_path,
+            package_path,
             args.chip,
             target,
             example,
-            &CargoAction::Build,
+            CargoAction::Build,
+            1,
         )
     } else if args.example.is_some() {
         // An invalid argument was provided:
@@ -233,11 +244,12 @@ fn build_examples(args: ExampleArgs, examples: Vec<Metadata>, package_path: &Pat
         // Attempt to build each supported example, with all required features enabled:
         examples.iter().try_for_each(|example| {
             xtask::execute_app(
-                &package_path,
+                package_path,
                 args.chip,
                 target,
                 example,
-                &CargoAction::Build,
+                CargoAction::Build,
+                1,
             )
         })
     }
@@ -245,17 +257,18 @@ fn build_examples(args: ExampleArgs, examples: Vec<Metadata>, package_path: &Pat
 
 fn run_example(args: ExampleArgs, examples: Vec<Metadata>, package_path: &Path) -> Result<()> {
     // Determine the appropriate build target for the given package and chip:
-    let target = target_triple(&args.package, &args.chip)?;
+    let target = target_triple(args.package, &args.chip)?;
 
     // Filter the examples down to only the binary we're interested in, assuming it
     // actually supports the specified chip:
     if let Some(example) = examples.iter().find(|ex| Some(ex.name()) == args.example) {
         xtask::execute_app(
-            &package_path,
+            package_path,
             args.chip,
             target,
-            &example,
-            &CargoAction::Run,
+            example,
+            CargoAction::Run,
+            1,
         )
     } else {
         bail!("Example not found or unsupported for the given chip")
@@ -267,7 +280,7 @@ fn tests(workspace: &Path, args: TestArgs, action: CargoAction) -> Result<()> {
     let package_path = xtask::windows_safe_path(&workspace.join("hil-test"));
 
     // Determine the appropriate build target for the given package and chip:
-    let target = target_triple(&Package::HilTest, &args.chip)?;
+    let target = target_triple(Package::HilTest, &args.chip)?;
 
     // Load all tests which support the specified chip and parse their metadata:
     let mut tests = xtask::load_examples(&package_path.join("tests"))?
@@ -276,17 +289,33 @@ fn tests(workspace: &Path, args: TestArgs, action: CargoAction) -> Result<()> {
         .collect::<Vec<_>>();
 
     // Sort all tests by name:
-    tests.sort_by(|a, b| a.name().cmp(&b.name()));
+    tests.sort_by_key(|a| a.name());
 
     // Execute the specified action:
     if let Some(test) = tests.iter().find(|test| Some(test.name()) == args.test) {
-        xtask::execute_app(&package_path, args.chip, target, &test, &action)
+        xtask::execute_app(
+            &package_path,
+            args.chip,
+            target,
+            test,
+            action,
+            args.repeat.unwrap_or(1),
+        )
     } else if args.test.is_some() {
         bail!("Test not found or unsupported for the given chip")
     } else {
         let mut failed = Vec::new();
         for test in tests {
-            if xtask::execute_app(&package_path, args.chip, target, &test, &action).is_err() {
+            if xtask::execute_app(
+                &package_path,
+                args.chip,
+                target,
+                &test,
+                action,
+                args.repeat.unwrap_or(1),
+            )
+            .is_err()
+            {
                 failed.push(test.name());
             }
         }
@@ -344,7 +373,7 @@ fn build_documentation_for_package(
         validate_package_chip(&package, chip)?;
 
         // Determine the appropriate build target for the given package and chip:
-        let target = target_triple(&package, &chip)?;
+        let target = target_triple(package, chip)?;
 
         // Build the documentation for the specified package, targeting the
         // specified chip:
@@ -376,7 +405,6 @@ fn build_documentation_for_package(
             chip => chip.to_string(),
             chip_pretty => chip.pretty_name(),
             package => package.to_string().replace('-', "_"),
-            description => format!("{} (targeting {})", package, chip.pretty_name()),
         });
     }
 
@@ -449,8 +477,8 @@ fn fmt_packages(workspace: &Path, args: FmtPackagesArgs) -> Result<()> {
     Ok(())
 }
 
-fn lint_packages(workspace: &Path, _args: LintPackagesArgs) -> Result<()> {
-    let mut packages = Package::iter().collect::<Vec<_>>();
+fn lint_packages(workspace: &Path, args: LintPackagesArgs) -> Result<()> {
+    let mut packages = args.packages;
     packages.sort();
 
     for package in packages {
@@ -460,94 +488,173 @@ fn lint_packages(workspace: &Path, _args: LintPackagesArgs) -> Result<()> {
         // building, so we need to handle each individually (though there
         // is *some* overlap)
 
-        match package {
-            Package::EspBacktrace => lint_package(
-                &path,
-                &[
-                    "-Zbuild-std=core",
-                    "--no-default-features",
-                    "--target=riscv32imc-unknown-none-elf",
-                    "--features=esp32c6,defmt",
-                ],
-            )?,
+        for chip in &args.chips {
+            let device = Config::for_chip(chip);
 
-            Package::EspHal => {
-                // Since different files/modules can be included/excluded
-                // depending on the target, we must lint *all* targets:
-                for chip in Chip::iter() {
+            match package {
+                Package::EspBacktrace => {
+                    lint_package(
+                        &path,
+                        &[
+                            "-Zbuild-std=core",
+                            "--no-default-features",
+                            &format!("--target={}", chip.target()),
+                            &format!("--features={chip},defmt"),
+                        ],
+                    )?;
+                }
+
+                Package::EspHal => {
+                    let mut features = format!("--features={chip},ci");
+
+                    // Cover all esp-hal features where a device is supported
+                    if device.contains("usb0") {
+                        features.push_str(",usb-otg")
+                    }
+                    if device.contains("bt") {
+                        features.push_str(",bluetooth")
+                    }
+                    if device.contains("psram") {
+                        // TODO this doesn't test octal psram as it would require a separate build
+                        features.push_str(",psram-4m,psram-80mhz")
+                    }
+                    if matches!(chip, Chip::Esp32c6 | Chip::Esp32h2) {
+                        features.push_str(",flip-link")
+                    }
+
                     lint_package(
                         &path,
                         &[
                             "-Zbuild-std=core",
                             &format!("--target={}", chip.target()),
-                            &format!("--features={chip}"),
+                            &features,
                         ],
                     )?;
                 }
-            }
 
-            Package::EspHalEmbassy => {
-                // We need to specify a time driver, so we will check all
-                // options here (as the modules themselves are feature-gated):
-                for feature in ["time-systimer-16mhz", "time-timg0"] {
+                Package::EspHalEmbassy => {
                     lint_package(
                         &path,
                         &[
                             "-Zbuild-std=core",
-                            "--target=riscv32imac-unknown-none-elf",
-                            &format!("--features=esp32c6,{feature}"),
+                            &format!("--target={}", chip.target()),
+                            &format!("--features={chip},executors,defmt,integrated-timers"),
                         ],
                     )?;
                 }
+
+                Package::EspIeee802154 => {
+                    if device.contains("ieee802154") {
+                        lint_package(
+                            &path,
+                            &[
+                                "-Zbuild-std=core",
+                                &format!("--target={}", chip.target()),
+                                &format!("--features={chip}"),
+                            ],
+                        )?;
+                    }
+                }
+                Package::EspLpHal => {
+                    if device.contains("lp_core") {
+                        lint_package(
+                            &path,
+                            &[
+                                "-Zbuild-std=core",
+                                &format!("--target={}", chip.lp_target().unwrap()),
+                                &format!("--features={chip},embedded-io,embedded-hal-02"),
+                            ],
+                        )?;
+                    }
+                }
+                Package::EspHalSmartled => {
+                    if device.contains("rmt") {
+                        lint_package(
+                            &path,
+                            &[
+                                "-Zbuild-std=core",
+                                &format!("--target={}", chip.target()),
+                                &format!("--features={chip}"),
+                            ],
+                        )?;
+                    }
+                }
+
+                Package::EspPrintln => {
+                    lint_package(
+                        &path,
+                        &[
+                            "-Zbuild-std=core",
+                            &format!("--target={}", chip.target()),
+                            &format!("--features={chip},defmt-espflash"),
+                        ],
+                    )?;
+                }
+
+                Package::EspRiscvRt => {
+                    if matches!(device.arch(), Arch::RiscV) {
+                        lint_package(
+                            &path,
+                            &["-Zbuild-std=core", &format!("--target={}", chip.target())],
+                        )?;
+                    }
+                }
+
+                Package::EspStorage => {
+                    lint_package(
+                        &path,
+                        &[
+                            "-Zbuild-std=core",
+                            &format!("--target={}", chip.target()),
+                            &format!("--features={chip},storage,nor-flash,low-level"),
+                        ],
+                    )?;
+                }
+
+                Package::EspWifi => {
+                    let mut features = format!("--features={chip},async,ps-min-modem,defmt");
+
+                    if device.contains("wifi") {
+                        features
+                            .push_str(",wifi-default,esp-now,embedded-svc,embassy-net,dump-packets")
+                    }
+                    if device.contains("bt") {
+                        features.push_str(",ble")
+                    }
+                    if device.contains("coex") {
+                        features.push_str(",coex")
+                    }
+                    lint_package(
+                        &path,
+                        &[
+                            "-Zbuild-std=core",
+                            &format!("--target={}", chip.target()),
+                            "--no-default-features",
+                            &features,
+                        ],
+                    )?;
+                }
+
+                Package::XtensaLxRt => {
+                    if matches!(device.arch(), Arch::Xtensa) {
+                        lint_package(
+                            &path,
+                            &[
+                                "-Zbuild-std=core",
+                                &format!("--target={}", chip.target()),
+                                &format!("--features={chip}"),
+                            ],
+                        )?
+                    }
+                }
+
+                // We will *not* check the following packages with `clippy`; this
+                // may or may not change in the future:
+                Package::Examples | Package::HilTest => {}
+
+                // By default, no `clippy` arguments are required:
+                _ => lint_package(&path, &[])?,
             }
-
-            Package::EspHalProcmacros | Package::EspRiscvRt => lint_package(
-                &path,
-                &["-Zbuild-std=core", "--target=riscv32imc-unknown-none-elf"],
-            )?,
-
-            Package::EspHalSmartled | Package::EspIeee802154 | Package::EspLpHal => lint_package(
-                &path,
-                &[
-                    "-Zbuild-std=core",
-                    "--target=riscv32imac-unknown-none-elf",
-                    "--features=esp32c6",
-                ],
-            )?,
-
-            Package::EspPrintln => lint_package(
-                &path,
-                &[
-                    "-Zbuild-std=core",
-                    "--target=riscv32imc-unknown-none-elf",
-                    "--features=esp32c6",
-                ],
-            )?,
-
-            Package::EspStorage => lint_package(
-                &path,
-                &[
-                    "-Zbuild-std=core",
-                    "--target=riscv32imc-unknown-none-elf",
-                    "--features=esp32c6",
-                ],
-            )?,
-
-            Package::EspWifi => lint_package(
-                &path,
-                &[
-                    "-Zbuild-std=core",
-                    "--target=riscv32imc-unknown-none-elf",
-                    "--features=esp32c3,wifi-default,ble,esp-now,async,embassy-net,esp-hal-embassy/time-timg0",
-                ],
-            )?,
-
-            // We will *not* check the following packages with `clippy`; this
-            // may or may not change in the future:
-            Package::Examples | Package::HilTest => {}
-
-            // By default, no `clippy` arguments are required:
-            _ => lint_package(&path, &[])?,
         }
     }
 
@@ -557,17 +664,21 @@ fn lint_packages(workspace: &Path, _args: LintPackagesArgs) -> Result<()> {
 fn lint_package(path: &Path, args: &[&str]) -> Result<()> {
     log::info!("Linting package: {}", path.display());
 
-    let mut builder = CargoArgsBuilder::default()
-        .toolchain("esp")
-        .subcommand("clippy"); // TODO: Is this still actually required?
+    let mut builder = CargoArgsBuilder::default().subcommand("clippy");
 
     for arg in args {
         builder = builder.arg(arg.to_string());
     }
 
-    let cargo_args = builder.arg("--").arg("-D").arg("warnings").build();
+    // build in release to reuse example artifacts
+    let cargo_args = builder
+        .arg("--release")
+        .arg("--")
+        .arg("-D")
+        .arg("warnings")
+        .build();
 
-    xtask::cargo::run(&cargo_args, &path)
+    xtask::cargo::run(&cargo_args, path)
 }
 
 fn run_elfs(args: RunElfArgs) -> Result<()> {
@@ -585,38 +696,21 @@ fn run_elfs(args: RunElfArgs) -> Result<()> {
 
         log::info!("Running test '{}' for '{}'", elf_name, args.chip);
 
-        let command = if args.chip == Chip::Esp32 {
-            Command::new("probe-rs")
-                .arg("run")
-                .arg("--chip")
-                .arg("esp32-3.3v")
-                .arg(elf_path)
-                .output()?
-        } else if args.chip == Chip::Esp32c2 {
-            Command::new("probe-rs")
-                .arg("run")
-                .arg("--chip")
-                .arg(args.chip.to_string())
-                .arg("--speed")
-                .arg("15000")
-                .arg(elf_path)
-                .output()?
-        } else {
-            Command::new("probe-rs")
-                .arg("run")
-                .arg("--chip")
-                .arg(args.chip.to_string())
-                .arg(elf_path)
-                .output()?
+        let mut command = Command::new("probe-rs");
+        command.arg("run").arg(elf_path);
+
+        if args.chip == Chip::Esp32c2 {
+            command.arg("--speed").arg("15000");
         };
 
-        println!(
-            "{}\n{}",
-            String::from_utf8_lossy(&command.stderr),
-            String::from_utf8_lossy(&command.stdout)
-        );
+        let mut command = command.spawn().context("Failed to execute probe-rs")?;
+        let status = command
+            .wait()
+            .context("Error while waiting for probe-rs to exit")?;
 
-        if !command.status.success() {
+        log::info!("'{elf_name}' done");
+
+        if !status.success() {
             failed.push(elf_name);
         }
     }
@@ -633,7 +727,7 @@ fn run_doctests(workspace: &Path, args: ExampleArgs) -> Result<()> {
     let package_path = xtask::windows_safe_path(&workspace.join(&package_name));
 
     // Determine the appropriate build target for the given package and chip:
-    let target = target_triple(&args.package, &args.chip)?;
+    let target = target_triple(args.package, &args.chip)?;
     let features = vec![args.chip.to_string()];
 
     // Build up an array of command-line arguments to pass to `cargo`:
@@ -658,8 +752,8 @@ fn run_doctests(workspace: &Path, args: ExampleArgs) -> Result<()> {
 // ----------------------------------------------------------------------------
 // Helper Functions
 
-fn target_triple<'a>(package: &'a Package, chip: &'a Chip) -> Result<&'a str> {
-    if *package == Package::EspLpHal {
+fn target_triple(package: Package, chip: &Chip) -> Result<&str> {
+    if package == Package::EspLpHal {
         chip.lp_target()
     } else {
         Ok(chip.target())
@@ -667,13 +761,12 @@ fn target_triple<'a>(package: &'a Package, chip: &'a Chip) -> Result<&'a str> {
 }
 
 fn validate_package_chip(package: &Package, chip: &Chip) -> Result<()> {
-    if *package == Package::EspLpHal && !chip.has_lp_core() {
-        bail!(
-            "Invalid chip provided for package '{}': '{}'",
-            package,
-            chip
-        );
-    }
+    ensure!(
+        *package != Package::EspLpHal || chip.has_lp_core(),
+        "Invalid chip provided for package '{}': '{}'",
+        package,
+        chip
+    );
 
     Ok(())
 }

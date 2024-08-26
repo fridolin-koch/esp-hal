@@ -1,118 +1,30 @@
-//! # Parallel IO
+//! # Parallel IO (PARL_IO)
 //!
+//! ## Overview
 //! The Parallel IO peripheral is a general purpose parallel interface that can
 //! be used to connect to external devices such as LED matrix, LCD display,
 //! Printer and Camera. The peripheral has independent TX and RX units. Each
 //! unit can have up to 8 or 16 data signals (depending on your target hardware)
 //! plus 1 or 2 clock signals.
 //!
+//! ## Configuration
 //! The driver uses DMA (Direct Memory Access) for efficient data transfer.
 //!
 //! ## Examples
+//! ### Initialization for RX
+//! See the [Parallel IO RX] example to learn how to initialize the RX and
+//! reading data.
+//!
+//! [Parallel IO RX]: https://github.com/esp-rs/esp-hal/blob/main/examples/src/bin/parl_io_rx.rs
 //!
 //! ### Initialization for TX
-//! ```rust, no_run
-#![doc = crate::before_snippet!()]
-//! # use esp_hal::gpio::Io;
-//! # use esp_hal::dma_buffers;
-//! # use esp_hal::dma::{Dma, DmaPriority};
-//! # use esp_hal::parl_io::{ClkOutPin, no_clk_pin, BitPackOrder, ParlIoTxOnly, SampleEdge, TxFourBits, TxPinConfigWithValidPin};
-//! # use crate::esp_hal::prelude::_fugit_RateExtU32;
+//! See the [Parallel IO TX] example to learn how to initialize the TX and
+//! transferring data.
 //!
-//! # let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
-//!
-//! # let dma = Dma::new(peripherals.DMA);
-//! # let dma_channel = dma.channel0;
-//!
-//! let (tx_buffer, tx_descriptors, _, _) = dma_buffers!(32000, 0);
-//! let buffer = tx_buffer;
-//!
-//! // configure the data pins to use
-//! let tx_pins = TxFourBits::new(io.pins.gpio1, io.pins.gpio2, io.pins.gpio3,
-//! io.pins.gpio4);
-//!
-//! // configure the valid pin which will be driven high during a TX transfer
-//! let mut pin_conf = TxPinConfigWithValidPin::new(tx_pins, io.pins.gpio5);
-//!
-//! let mut parl_io = ParlIoTxOnly::new(
-//!     peripherals.PARL_IO,
-//!     dma_channel.configure(
-//!         false,
-//!         DmaPriority::Priority0,
-//!     ),
-//!     tx_descriptors,
-//!     1.MHz(),
-//!     &clocks,
-//! )
-//! .unwrap();
-//!
-//! // configure a pin for the clock signal
-//! let mut cp = ClkOutPin::new(io.pins.gpio6);
-//!
-//! let mut parl_io_tx = parl_io
-//!     .tx
-//!     .with_config(
-//!         &mut pin_conf,
-//!         &mut cp,
-//!         0,
-//!         SampleEdge::Normal,
-//!         BitPackOrder::Msb,
-//!     )
-//!     .unwrap();
-//!
-//! let mut transfer = parl_io_tx.write_dma(&buffer).unwrap();
-//!
-//! transfer.wait().unwrap();
-//! # }
-//! ```
-//! 
-//! ### Initialization for RX
-//! ```rust, no_run
-#![doc = crate::before_snippet!()]
-//! # use esp_hal::gpio::Io;
-//! # use esp_hal::dma_buffers;
-//! # use esp_hal::dma::{Dma, DmaPriority};
-//! # use esp_hal::parl_io::{no_clk_pin, BitPackOrder, ParlIoRxOnly, RxFourBits};
-//! # use crate::esp_hal::prelude::_fugit_RateExtU32;
-//!
-//! # let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
-//!
-//! # let dma = Dma::new(peripherals.DMA);
-//! # let dma_channel = dma.channel0;
-//!
-//! let mut rx_pins = RxFourBits::new(io.pins.gpio1, io.pins.gpio2,
-//! io.pins.gpio3, io.pins.gpio4);
-//!
-//! let (_, _, rx_buffer, rx_descriptors) = dma_buffers!(0, 32000);
-//! let mut buffer = rx_buffer;
-//!
-//! let parl_io = ParlIoRxOnly::new(
-//!     peripherals.PARL_IO,
-//!     dma_channel.configure(
-//!         false,
-//!         DmaPriority::Priority0,
-//!     ),
-//!     rx_descriptors,
-//!     1.MHz(),
-//!     &clocks,
-//! )
-//! .unwrap();
-//!
-//! let mut parl_io_rx = parl_io
-//!     .rx
-//!     .with_config(&mut rx_pins, no_clk_pin(), BitPackOrder::Msb, Some(0xfff))
-//!     .unwrap();
-//!
-//! let mut transfer = parl_io_rx.read_dma(&mut buffer).unwrap();
-//! transfer.wait().unwrap();
-//! # }
-//! ```
-
-#![warn(missing_docs)]
+//! [Parallel IO TX]: https://github.com/esp-rs/esp-hal/blob/main/examples/src/bin/parl_io_tx.rs
 
 use core::marker::PhantomData;
 
-use embedded_dma::{ReadBuffer, WriteBuffer};
 use enumset::{EnumSet, EnumSetType};
 use fugit::HertzU32;
 use peripheral::PeripheralRef;
@@ -123,16 +35,20 @@ use crate::{
     dma::{
         dma_private::{DmaSupport, DmaSupportRx, DmaSupportTx},
         Channel,
-        ChannelTypes,
+        ChannelRx,
+        ChannelTx,
         DescriptorChain,
+        DmaChannel,
         DmaDescriptor,
         DmaError,
         DmaPeripheral,
         DmaTransferRx,
         DmaTransferTx,
         ParlIoPeripheral,
+        ReadBuffer,
         RxPrivate,
         TxPrivate,
+        WriteBuffer,
     },
     gpio::{InputPin, OutputPin},
     interrupt::InterruptHandler,
@@ -140,6 +56,7 @@ use crate::{
     peripherals,
     system::PeripheralClockControl,
     Blocking,
+    InterruptConfigurable,
     Mode,
 };
 
@@ -918,7 +835,7 @@ impl<'d, P0, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12, P13, P14, P15>
 
 impl<'d, CH, DM> TxCreatorFullDuplex<'d, CH, DM>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     DM: Mode,
 {
     /// Configure TX to use the given pins and settings
@@ -951,7 +868,7 @@ where
 
 impl<'d, CH, DM> TxCreator<'d, CH, DM>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     DM: Mode,
 {
     /// Configure TX to use the given pins and settings
@@ -985,17 +902,17 @@ where
 /// Parallel IO TX channel
 pub struct ParlIoTx<'d, CH, DM>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     DM: Mode,
 {
-    tx_channel: CH::Tx<'d>,
+    tx_channel: ChannelTx<'d, CH>,
     tx_chain: DescriptorChain,
     phantom: PhantomData<DM>,
 }
 
 impl<'d, CH, DM> core::fmt::Debug for ParlIoTx<'d, CH, DM>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     DM: Mode,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -1005,7 +922,7 @@ where
 
 impl<'d, CH, DM> RxCreatorFullDuplex<'d, CH, DM>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     DM: Mode,
 {
     /// Configure RX to use the given pins and settings
@@ -1036,7 +953,7 @@ where
 
 impl<'d, CH, DM> RxCreator<'d, CH, DM>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     DM: Mode,
 {
     /// Configure RX to use the given pins and settings
@@ -1068,17 +985,17 @@ where
 /// Parallel IO RX channel
 pub struct ParlIoRx<'d, CH, DM>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     DM: Mode,
 {
-    rx_channel: CH::Rx<'d>,
+    rx_channel: ChannelRx<'d, CH>,
     rx_chain: DescriptorChain,
     phantom: PhantomData<DM>,
 }
 
 impl<'d, CH, DM> core::fmt::Debug for ParlIoRx<'d, CH, DM>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     DM: Mode,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -1179,20 +1096,23 @@ fn internal_clear_interrupts(interrupts: EnumSet<ParlIoInterrupt>) {
 /// Parallel IO in full duplex mode
 ///
 /// Full duplex mode might limit the maximum possible bit width.
-#[allow(missing_docs)]
 pub struct ParlIoFullDuplex<'d, CH, DM>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     CH::P: ParlIoPeripheral,
     DM: Mode,
 {
+    /// The transmitter (TX) channel responsible for handling DMA transfers in
+    /// the parallel I/O full-duplex operation.
     pub tx: TxCreatorFullDuplex<'d, CH, DM>,
+    /// The receiver (RX) channel responsible for handling DMA transfers in the
+    /// parallel I/O full-duplex operation.
     pub rx: RxCreatorFullDuplex<'d, CH, DM>,
 }
 
 impl<'d, CH, DM> ParlIoFullDuplex<'d, CH, DM>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     CH::P: ParlIoPeripheral,
     DM: Mode,
 {
@@ -1203,7 +1123,7 @@ where
         tx_descriptors: &'static mut [DmaDescriptor],
         rx_descriptors: &'static mut [DmaDescriptor],
         frequency: HertzU32,
-        _clocks: &Clocks,
+        _clocks: &Clocks<'d>,
     ) -> Result<Self, Error> {
         internal_init(&mut dma_channel, frequency)?;
 
@@ -1224,7 +1144,7 @@ where
 
 impl<'d, CH> ParlIoFullDuplex<'d, CH, Blocking>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     CH::P: ParlIoPeripheral,
 {
     /// Sets the interrupt handler, enables it with
@@ -1256,20 +1176,38 @@ where
     }
 }
 
+impl<'d, CH> crate::private::Sealed for ParlIoFullDuplex<'d, CH, Blocking>
+where
+    CH: DmaChannel,
+    CH::P: ParlIoPeripheral,
+{
+}
+
+impl<'d, CH> InterruptConfigurable for ParlIoFullDuplex<'d, CH, Blocking>
+where
+    CH: DmaChannel,
+    CH::P: ParlIoPeripheral,
+{
+    fn set_interrupt_handler(&mut self, handler: crate::interrupt::InterruptHandler) {
+        ParlIoFullDuplex::set_interrupt_handler(self, handler);
+    }
+}
+
 /// Parallel IO in half duplex / TX only mode
-#[allow(missing_docs)]
 pub struct ParlIoTxOnly<'d, CH, DM>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     CH::P: ParlIoPeripheral,
     DM: Mode,
 {
+    /// The transmitter (TX) channel responsible for handling DMA transfers in
+    /// the parallel I/O operation.
     pub tx: TxCreator<'d, CH, DM>,
 }
 
 impl<'d, CH, DM> ParlIoTxOnly<'d, CH, DM>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     CH::P: ParlIoPeripheral,
     DM: Mode,
 {
@@ -1279,7 +1217,7 @@ where
         mut dma_channel: Channel<'d, CH, DM>,
         descriptors: &'static mut [DmaDescriptor],
         frequency: HertzU32,
-        _clocks: &Clocks,
+        _clocks: &Clocks<'d>,
     ) -> Result<Self, Error> {
         internal_init(&mut dma_channel, frequency)?;
 
@@ -1295,7 +1233,7 @@ where
 
 impl<'d, CH> ParlIoTxOnly<'d, CH, Blocking>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     CH::P: ParlIoPeripheral,
 {
     /// Sets the interrupt handler, enables it with
@@ -1327,20 +1265,38 @@ where
     }
 }
 
+impl<'d, CH> crate::private::Sealed for ParlIoTxOnly<'d, CH, Blocking>
+where
+    CH: DmaChannel,
+    CH::P: ParlIoPeripheral,
+{
+}
+
+impl<'d, CH> InterruptConfigurable for ParlIoTxOnly<'d, CH, Blocking>
+where
+    CH: DmaChannel,
+    CH::P: ParlIoPeripheral,
+{
+    fn set_interrupt_handler(&mut self, handler: crate::interrupt::InterruptHandler) {
+        ParlIoTxOnly::set_interrupt_handler(self, handler);
+    }
+}
+
 /// Parallel IO in half duplex / RX only mode
-#[allow(missing_docs)]
 pub struct ParlIoRxOnly<'d, CH, DM>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     CH::P: ParlIoPeripheral,
     DM: Mode,
 {
+    /// The receiver (RX) channel responsible for handling DMA transfers in the
+    /// parallel I/O operation.
     pub rx: RxCreator<'d, CH, DM>,
 }
 
 impl<'d, CH, DM> ParlIoRxOnly<'d, CH, DM>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     CH::P: ParlIoPeripheral,
     DM: Mode,
 {
@@ -1350,7 +1306,7 @@ where
         mut dma_channel: Channel<'d, CH, DM>,
         descriptors: &'static mut [DmaDescriptor],
         frequency: HertzU32,
-        _clocks: &Clocks,
+        _clocks: &Clocks<'d>,
     ) -> Result<Self, Error> {
         internal_init(&mut dma_channel, frequency)?;
 
@@ -1366,7 +1322,7 @@ where
 
 impl<'d, CH> ParlIoRxOnly<'d, CH, Blocking>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     CH::P: ParlIoPeripheral,
 {
     /// Sets the interrupt handler, enables it with
@@ -1398,12 +1354,29 @@ where
     }
 }
 
+impl<'d, CH> crate::private::Sealed for ParlIoRxOnly<'d, CH, Blocking>
+where
+    CH: DmaChannel,
+    CH::P: ParlIoPeripheral,
+{
+}
+
+impl<'d, CH> InterruptConfigurable for ParlIoRxOnly<'d, CH, Blocking>
+where
+    CH: DmaChannel,
+    CH::P: ParlIoPeripheral,
+{
+    fn set_interrupt_handler(&mut self, handler: crate::interrupt::InterruptHandler) {
+        ParlIoRxOnly::set_interrupt_handler(self, handler);
+    }
+}
+
 fn internal_init<CH, DM>(
     dma_channel: &mut Channel<'_, CH, DM>,
     frequency: HertzU32,
 ) -> Result<(), Error>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     CH::P: ParlIoPeripheral,
     DM: Mode,
 {
@@ -1411,6 +1384,7 @@ where
         return Err(Error::UnreachableClockRate);
     }
 
+    PeripheralClockControl::reset(crate::system::Peripheral::ParlIo);
     PeripheralClockControl::enable(crate::system::Peripheral::ParlIo);
 
     let pcr = unsafe { &*crate::peripherals::PCR::PTR };
@@ -1448,7 +1422,7 @@ where
 
 impl<'d, CH, DM> ParlIoTx<'d, CH, DM>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     CH::P: ParlIoPeripheral,
     DM: Mode,
 {
@@ -1460,9 +1434,9 @@ where
     pub fn write_dma<'t, TXBUF>(
         &'t mut self,
         words: &'t TXBUF,
-    ) -> Result<DmaTransferTx<Self>, Error>
+    ) -> Result<DmaTransferTx<'_, Self>, Error>
     where
-        TXBUF: ReadBuffer<Word = u8>,
+        TXBUF: ReadBuffer,
     {
         let (ptr, len) = unsafe { words.read_buffer() };
 
@@ -1507,7 +1481,7 @@ where
 
 impl<'d, CH, DM> DmaSupport for ParlIoTx<'d, CH, DM>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     CH::P: ParlIoPeripheral,
     DM: Mode,
 {
@@ -1524,11 +1498,11 @@ where
 
 impl<'d, CH, DM> DmaSupportTx for ParlIoTx<'d, CH, DM>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     CH::P: ParlIoPeripheral,
     DM: Mode,
 {
-    type TX = CH::Tx<'d>;
+    type TX = ChannelTx<'d, CH>;
 
     fn tx(&mut self) -> &mut Self::TX {
         &mut self.tx_channel
@@ -1541,7 +1515,7 @@ where
 
 impl<'d, CH, DM> ParlIoRx<'d, CH, DM>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     CH::P: ParlIoPeripheral,
     DM: Mode,
 {
@@ -1556,9 +1530,9 @@ where
     pub fn read_dma<'t, RXBUF>(
         &'t mut self,
         words: &'t mut RXBUF,
-    ) -> Result<DmaTransferRx<Self>, Error>
+    ) -> Result<DmaTransferRx<'_, Self>, Error>
     where
-        RXBUF: WriteBuffer<Word = u8>,
+        RXBUF: WriteBuffer,
     {
         let (ptr, len) = unsafe { words.write_buffer() };
 
@@ -1572,7 +1546,7 @@ where
     }
 
     fn start_receive_bytes_dma(
-        rx_channel: &mut CH::Rx<'d>,
+        rx_channel: &mut ChannelRx<'d, CH>,
         rx_chain: &mut DescriptorChain,
         ptr: *mut u8,
         len: usize,
@@ -1602,7 +1576,7 @@ where
 
 impl<'d, CH, DM> DmaSupport for ParlIoRx<'d, CH, DM>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     CH::P: ParlIoPeripheral,
     DM: Mode,
 {
@@ -1626,11 +1600,11 @@ where
 
 impl<'d, CH, DM> DmaSupportRx for ParlIoRx<'d, CH, DM>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     CH::P: ParlIoPeripheral,
     DM: Mode,
 {
-    type RX = CH::Rx<'d>;
+    type RX = ChannelRx<'d, CH>;
 
     fn rx(&mut self) -> &mut Self::RX {
         &mut self.rx_channel
@@ -1644,10 +1618,10 @@ where
 /// Creates a TX channel
 pub struct TxCreator<'d, CH, DM>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     DM: Mode,
 {
-    tx_channel: CH::Tx<'d>,
+    tx_channel: ChannelTx<'d, CH>,
     descriptors: &'static mut [DmaDescriptor],
     phantom: PhantomData<DM>,
 }
@@ -1655,10 +1629,10 @@ where
 /// Creates a RX channel
 pub struct RxCreator<'d, CH, DM>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     DM: Mode,
 {
-    rx_channel: CH::Rx<'d>,
+    rx_channel: ChannelRx<'d, CH>,
     descriptors: &'static mut [DmaDescriptor],
     phantom: PhantomData<DM>,
 }
@@ -1666,10 +1640,10 @@ where
 /// Creates a TX channel
 pub struct TxCreatorFullDuplex<'d, CH, DM>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     DM: Mode,
 {
-    tx_channel: CH::Tx<'d>,
+    tx_channel: ChannelTx<'d, CH>,
     descriptors: &'static mut [DmaDescriptor],
     phantom: PhantomData<DM>,
 }
@@ -1677,10 +1651,10 @@ where
 /// Creates a RX channel
 pub struct RxCreatorFullDuplex<'d, CH, DM>
 where
-    CH: ChannelTypes,
+    CH: DmaChannel,
     DM: Mode,
 {
-    rx_channel: CH::Rx<'d>,
+    rx_channel: ChannelRx<'d, CH>,
     descriptors: &'static mut [DmaDescriptor],
     phantom: PhantomData<DM>,
 }
@@ -1695,7 +1669,7 @@ pub mod asynch {
 
     use super::{private::Instance, Error, ParlIoRx, ParlIoTx, MAX_DMA_SIZE};
     use crate::{
-        dma::{asynch::DmaRxDoneChFuture, ChannelTypes, ParlIoPeripheral},
+        dma::{asynch::DmaRxFuture, DmaChannel, ParlIoPeripheral},
         peripherals::Interrupt,
     };
 
@@ -1751,7 +1725,7 @@ pub mod asynch {
 
     impl<'d, CH> ParlIoTx<'d, CH, crate::Async>
     where
-        CH: ChannelTypes,
+        CH: DmaChannel,
         CH::P: ParlIoPeripheral,
     {
         /// Perform a DMA write.
@@ -1774,7 +1748,7 @@ pub mod asynch {
 
     impl<'d, CH> ParlIoRx<'d, CH, crate::Async>
     where
-        CH: ChannelTypes,
+        CH: DmaChannel,
         CH::P: ParlIoPeripheral,
     {
         /// Perform a DMA write.
@@ -1783,13 +1757,11 @@ pub mod asynch {
         pub async fn read_dma_async(&mut self, words: &mut [u8]) -> Result<(), Error> {
             let (ptr, len) = (words.as_mut_ptr(), words.len());
 
-            if !Instance::is_suc_eof_generated_externally() {
-                if len > MAX_DMA_SIZE {
-                    return Err(Error::MaxDmaTransferSizeExceeded);
-                }
+            if !Instance::is_suc_eof_generated_externally() && len > MAX_DMA_SIZE {
+                return Err(Error::MaxDmaTransferSizeExceeded);
             }
 
-            let future = DmaRxDoneChFuture::new(&mut self.rx_channel);
+            let future = DmaRxFuture::new(&mut self.rx_channel);
             Self::start_receive_bytes_dma(future.rx, &mut self.rx_chain, ptr, len)?;
             future.await?;
 

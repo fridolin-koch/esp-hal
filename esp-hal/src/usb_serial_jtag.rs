@@ -1,5 +1,6 @@
-//! USB Serial/JTAG Controller
+//! USB Serial/JTAG Controller (USB_SERIAL_JTAG)
 //!
+//! ## Overview
 //! The USB Serial/JTAG controller can be used to program the SoC's flash, read
 //! program output, or attach a debugger to the running program. This is
 //! possible for any computer with a USB host (hereafter referred to as 'host'),
@@ -26,7 +27,6 @@
 //!   connect to a host computer
 //!
 //! ## Usage
-//!
 //! The USB Serial/JTAG driver implements a number of third-party traits, with
 //! the intention of making the HAL inter-compatible with various device drivers
 //! from the community. This includes, but is not limited to, the [embedded-hal]
@@ -38,14 +38,11 @@
 //! with this driver.
 //!
 //! ## Examples
-//!
 //! ### Sending and Receiving Data
-//!
 //! ```rust, no_run
 #![doc = crate::before_snippet!()]
 //! use esp_hal::usb_serial_jtag::UsbSerialJtag;
-//! use core::option::Option::None;
-//! let mut usb_serial = UsbSerialJtag::new(peripherals.USB_DEVICE, None);
+//! let mut usb_serial = UsbSerialJtag::new(peripherals.USB_DEVICE);
 //!
 //! // Write bytes out over the USB Serial/JTAG:
 //! usb_serial.write_bytes("Hello, world!".as_bytes()).expect("write error!");
@@ -56,7 +53,7 @@
 //! ```rust, no_run
 #![doc = crate::before_snippet!()]
 //! # use esp_hal::usb_serial_jtag::UsbSerialJtag;
-//! let mut usb_serial = UsbSerialJtag::new(peripherals.USB_DEVICE, None);
+//! let mut usb_serial = UsbSerialJtag::new(peripherals.USB_DEVICE);
 //! // The USB Serial/JTAG can be split into separate Transmit and Receive
 //! // components:
 //! let (mut tx, mut rx) = usb_serial.split();
@@ -81,6 +78,7 @@ use crate::{
     peripherals::{usb_device::RegisterBlock, Interrupt, USB_DEVICE},
     system::PeripheralClockControl,
     Blocking,
+    InterruptConfigurable,
     Mode,
 };
 
@@ -257,11 +255,16 @@ where
 
 impl<'d> UsbSerialJtag<'d, Blocking> {
     /// Create a new USB serial/JTAG instance with defaults
-    pub fn new(
-        usb_device: impl Peripheral<P = USB_DEVICE> + 'd,
-        interrupt: Option<InterruptHandler>,
-    ) -> Self {
-        Self::new_inner(usb_device, interrupt)
+    pub fn new(usb_device: impl Peripheral<P = USB_DEVICE> + 'd) -> Self {
+        Self::new_inner(usb_device)
+    }
+}
+
+impl<'d> crate::private::Sealed for UsbSerialJtag<'d, Blocking> {}
+
+impl<'d> InterruptConfigurable for UsbSerialJtag<'d, Blocking> {
+    fn set_interrupt_handler(&mut self, handler: crate::interrupt::InterruptHandler) {
+        self.inner_set_interrupt_handler(handler);
     }
 }
 
@@ -269,10 +272,9 @@ impl<'d, M> UsbSerialJtag<'d, M>
 where
     M: Mode,
 {
-    fn new_inner(
-        _usb_device: impl Peripheral<P = USB_DEVICE> + 'd,
-        interrupt: Option<InterruptHandler>,
-    ) -> Self {
+    fn new_inner(_usb_device: impl Peripheral<P = USB_DEVICE> + 'd) -> Self {
+        // Do NOT reset the peripheral. Doing so will result in a broken USB JTAG
+        // connection.
         PeripheralClockControl::enable(crate::system::Peripheral::UsbDevice);
 
         USB_DEVICE::disable_tx_interrupts();
@@ -296,21 +298,21 @@ where
             }
         }
 
-        if let Some(interrupt) = interrupt {
-            unsafe {
-                crate::interrupt::bind_interrupt(Interrupt::USB_DEVICE, interrupt.handler());
-                crate::interrupt::enable(Interrupt::USB_DEVICE, interrupt.priority()).unwrap();
-            }
-        }
-
         Self {
             tx: UsbSerialJtagTx::new_inner(),
             rx: UsbSerialJtagRx::new_inner(),
         }
     }
 
+    fn inner_set_interrupt_handler(&mut self, handler: InterruptHandler) {
+        unsafe {
+            crate::interrupt::bind_interrupt(Interrupt::USB_DEVICE, handler.handler());
+            crate::interrupt::enable(Interrupt::USB_DEVICE, handler.priority()).unwrap();
+        }
+    }
+
     /// Split the USB Serial JTAG peripheral into a transmitter and receiver,
-    /// which is particuarly useful when having two tasks correlating to
+    /// which is particularly useful when having two tasks correlating to
     /// transmitting and receiving.
     pub fn split(self) -> (UsbSerialJtagTx<'d, M>, UsbSerialJtagRx<'d, M>) {
         (self.tx, self.rx)
@@ -337,6 +339,7 @@ where
         self.tx.flush_tx_nb()
     }
 
+    /// Read a single byte but don't block if it isn't ready immediately
     pub fn read_byte(&mut self) -> nb::Result<u8, Error> {
         self.rx.read_byte()
     }
@@ -765,7 +768,9 @@ mod asynch {
     impl<'d> UsbSerialJtag<'d, Async> {
         /// Create a new USB serial/JTAG instance in asynchronous mode
         pub fn new_async(usb_device: impl Peripheral<P = USB_DEVICE> + 'd) -> Self {
-            Self::new_inner(usb_device, Some(async_interrupt_handler))
+            let mut this = Self::new_inner(usb_device);
+            this.inner_set_interrupt_handler(async_interrupt_handler);
+            this
         }
     }
 
@@ -803,7 +808,7 @@ mod asynch {
 
     impl UsbSerialJtagRx<'_, Async> {
         async fn read_bytes_async(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
-            if buf.len() == 0 {
+            if buf.is_empty() {
                 return Ok(0);
             }
 

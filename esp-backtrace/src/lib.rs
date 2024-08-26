@@ -1,8 +1,4 @@
 #![allow(rustdoc::bare_urls, unused_macros)]
-#![cfg_attr(
-    any(nightly_before_2024_06_12, nightly_since_2024_06_12),
-    feature(panic_info_message)
-)]
 #![cfg_attr(target_arch = "xtensa", feature(asm_experimental_arch))]
 #![doc = include_str!("../README.md")]
 #![doc(html_logo_url = "https://avatars.githubusercontent.com/u/46717278")]
@@ -52,51 +48,19 @@ pub mod arch;
 #[cfg(feature = "panic-handler")]
 #[panic_handler]
 fn panic_handler(info: &core::panic::PanicInfo) -> ! {
+    pre_backtrace();
+
     #[cfg(feature = "colors")]
     set_color_code(RED);
 
     println!("");
-    println!("");
+    println!("====================== PANIC ======================");
 
-    if let Some(location) = info.location() {
-        let (file, line, column) = (location.file(), location.line(), location.column());
-        println!(
-            "!! A panic occured in '{}', at line {}, column {}:",
-            file, line, column
-        );
-    } else {
-        println!("!! A panic occured at an unknown location:");
-    }
+    #[cfg(not(feature = "defmt"))]
+    println!("{}", info);
 
-    #[cfg(not(any(nightly_before_2024_06_12, nightly_since_2024_06_12)))]
-    {
-        #[cfg(not(feature = "defmt"))]
-        println!("{:#?}", info);
-
-        #[cfg(feature = "defmt")]
-        println!("{:#?}", defmt::Display2Format(info));
-    }
-
-    #[cfg(nightly_before_2024_06_12)]
-    {
-        if let Some(message) = info.message() {
-            #[cfg(not(feature = "defmt"))]
-            println!("{}", message);
-
-            #[cfg(feature = "defmt")]
-            println!("{}", defmt::Display2Format(message));
-        }
-    }
-
-    #[cfg(nightly_since_2024_06_12)]
-    {
-        let message = info.message();
-        #[cfg(not(feature = "defmt"))]
-        println!("{}", message);
-
-        #[cfg(feature = "defmt")]
-        println!("{}", defmt::Display2Format(&message));
-    }
+    #[cfg(feature = "defmt")]
+    println!("{}", defmt::Display2Format(info));
 
     println!("");
     println!("Backtrace:");
@@ -107,14 +71,12 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
     if backtrace.iter().filter(|e| e.is_some()).count() == 0 {
         println!("No backtrace available - make sure to force frame-pointers. (see https://crates.io/crates/esp-backtrace)");
     }
-    for e in backtrace {
-        if let Some(addr) = e {
-            #[cfg(all(feature = "colors", feature = "println"))]
-            println!("{}0x{:x}", RED, addr - crate::arch::RA_OFFSET);
+    for addr in backtrace.into_iter().flatten() {
+        #[cfg(all(feature = "colors", feature = "println"))]
+        println!("{}0x{:x}", RED, addr - crate::arch::RA_OFFSET);
 
-            #[cfg(not(all(feature = "colors", feature = "println")))]
-            println!("0x{:x}", addr - crate::arch::RA_OFFSET);
-        }
+        #[cfg(not(all(feature = "colors", feature = "println")))]
+        println!("0x{:x}", addr - crate::arch::RA_OFFSET);
     }
 
     #[cfg(feature = "colors")]
@@ -131,6 +93,8 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
 #[no_mangle]
 #[link_section = ".rwtext"]
 unsafe fn __user_exception(cause: arch::ExceptionCause, context: arch::Context) {
+    pre_backtrace();
+
     #[cfg(feature = "colors")]
     set_color_code(RED);
 
@@ -159,12 +123,15 @@ unsafe fn __user_exception(cause: arch::ExceptionCause, context: arch::Context) 
     #[cfg(feature = "semihosting")]
     semihosting::process::abort();
 
+    #[cfg(not(feature = "semihosting"))]
     halt();
 }
 
 #[cfg(all(feature = "exception-handler", target_arch = "riscv32"))]
 #[export_name = "ExceptionHandler"]
 fn exception_handler(context: &arch::TrapFrame) -> ! {
+    pre_backtrace();
+
     let mepc = context.pc;
     let code = context.mcause & 0xff;
     let mtval = context.mtval;
@@ -214,14 +181,12 @@ fn exception_handler(context: &arch::TrapFrame) -> ! {
         if backtrace.iter().filter(|e| e.is_some()).count() == 0 {
             println!("No backtrace available - make sure to force frame-pointers. (see https://crates.io/crates/esp-backtrace)");
         }
-        for e in backtrace {
-            if let Some(addr) = e {
-                #[cfg(all(feature = "colors", feature = "println"))]
-                println!("{}0x{:x}", RED, addr - crate::arch::RA_OFFSET);
+        for addr in backtrace.into_iter().flatten() {
+            #[cfg(all(feature = "colors", feature = "println"))]
+            println!("{}0x{:x}", RED, addr - crate::arch::RA_OFFSET);
 
-                #[cfg(not(all(feature = "colors", feature = "println")))]
-                println!("0x{:x}", addr - crate::arch::RA_OFFSET);
-            }
+            #[cfg(not(all(feature = "colors", feature = "println")))]
+            println!("0x{:x}", addr - crate::arch::RA_OFFSET);
         }
     }
 
@@ -361,4 +326,16 @@ fn halt() -> ! {
     }
 
     loop {}
+}
+
+#[cfg(not(feature = "custom-pre-backtrace"))]
+#[allow(unused)]
+fn pre_backtrace() {}
+
+#[cfg(feature = "custom-pre-backtrace")]
+fn pre_backtrace() {
+    extern "Rust" {
+        fn custom_pre_backtrace();
+    }
+    unsafe { custom_pre_backtrace() }
 }

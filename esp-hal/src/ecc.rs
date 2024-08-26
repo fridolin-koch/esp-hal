@@ -1,6 +1,6 @@
-//! ECC Accelerator
+//! # Elliptic Curve Cryptography (ECC) Accelerator
 //!
-//! # Overview
+//! ## Overview
 //!
 //! Elliptic Curve Cryptography (ECC) is an approach to public-key cryptography
 //! based on the algebraic structure of elliptic curves. ECC allows smaller
@@ -10,22 +10,20 @@
 //! elliptic curves, thus accelerating ECC algorithm and ECC-derived
 //! algorithms (such as ECDSA).
 //!
-//! # Main features
-//!
+//! ## Configuration
 //! ECC Accelerator supports:
 //! - Two different elliptic curves, namely P-192 and P-256 defined in FIPS
 //!   186-3.
 //! - Seven working modes.
 //! - Interrupt upon completion of calculation.
 //!
-//! # Availability on ESP32 family
-//!
-//! The accelerator is available on ESP32-C2 and ESP32-C6.
-//!
-//! # Data representation
-//!
 //! Inputs of the ECC hardware accelerator must be provided in big-endian
 //! representation. The driver handles the inner representation of the blocks.
+//!
+//! ## Examples
+//! Visit the [ECC] test for an example of using the ECC Accelerator.
+//!
+//! [ECC]: https://github.com/esp-rs/esp-hal/blob/main/hil-test/tests/ecc.rs
 
 use core::marker::PhantomData;
 
@@ -35,6 +33,7 @@ use crate::{
     peripherals::ECC,
     reg_access::{AlignmentHelper, SocDependentEndianess},
     system::{Peripheral as PeripheralEnable, PeripheralClockControl},
+    InterruptConfigurable,
 };
 
 /// The ECC Accelerator driver instance
@@ -54,52 +53,57 @@ pub enum Error {
     PointNotOnSelectedCurve,
 }
 
+/// Represents supported elliptic curves for cryptographic operations.
 pub enum EllipticCurve {
+    /// The P-192 elliptic curve, a 192-bit curve.
     P192 = 0,
+    /// The P-256 elliptic curve. a 256-bit curve.
     P256 = 1,
 }
 
 #[derive(Clone)]
+/// Represents the operational modes for elliptic curve or modular arithmetic
+/// computations.
 pub enum WorkMode {
+    /// Point multiplication mode.
     PointMultiMode          = 0,
     #[cfg(esp32c2)]
+    /// Division mode.
     DivisionMode            = 1,
+    /// Point verification mode.
     PointVerif              = 2,
+    /// Point verification and multiplication mode.
     PointVerifMulti         = 3,
+    /// Jacobian point multiplication mode.
     JacobianPointMulti      = 4,
     #[cfg(esp32h2)]
+    /// Point addition mode.
     PointAdd                = 5,
+    /// Jacobian point verification mode.
     JacobianPointVerif      = 6,
+    /// Point verification and multiplication in Jacobian coordinates.
     PointVerifJacobianMulti = 7,
     #[cfg(esp32h2)]
+    /// Modular addition mode.
     ModAdd                  = 8,
     #[cfg(esp32h2)]
+    /// Modular subtraction mode.
     ModSub                  = 9,
     #[cfg(esp32h2)]
+    /// Modular multiplication mode.
     ModMulti                = 10,
     #[cfg(esp32h2)]
+    /// Modular division mode.
     ModDiv                  = 11,
 }
 
 impl<'d> Ecc<'d, crate::Blocking> {
     /// Create a new instance in [crate::Blocking] mode.
-    ///
-    /// Optionally an interrupt handler can be bound.    
-    pub fn new(ecc: impl Peripheral<P = ECC> + 'd, interrupt: Option<InterruptHandler>) -> Self {
+    pub fn new(ecc: impl Peripheral<P = ECC> + 'd) -> Self {
         crate::into_ref!(ecc);
 
+        PeripheralClockControl::reset(PeripheralEnable::Ecc);
         PeripheralClockControl::enable(PeripheralEnable::Ecc);
-
-        if let Some(interrupt) = interrupt {
-            unsafe {
-                crate::interrupt::bind_interrupt(
-                    crate::peripherals::Interrupt::ECC,
-                    interrupt.handler(),
-                );
-                crate::interrupt::enable(crate::peripherals::Interrupt::ECC, interrupt.priority())
-                    .unwrap();
-            }
-        }
 
         Self {
             ecc,
@@ -109,7 +113,20 @@ impl<'d> Ecc<'d, crate::Blocking> {
     }
 }
 
+impl<'d> crate::private::Sealed for Ecc<'d, crate::Blocking> {}
+
+impl<'d> InterruptConfigurable for Ecc<'d, crate::Blocking> {
+    fn set_interrupt_handler(&mut self, handler: InterruptHandler) {
+        unsafe {
+            crate::interrupt::bind_interrupt(crate::peripherals::Interrupt::ECC, handler.handler());
+            crate::interrupt::enable(crate::peripherals::Interrupt::ECC, handler.priority())
+                .unwrap();
+        }
+    }
+}
+
 impl<'d, DM: crate::Mode> Ecc<'d, DM> {
+    /// Resets the ECC peripheral.
     pub fn reset(&mut self) {
         self.ecc.mult_conf().reset()
     }

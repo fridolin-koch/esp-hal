@@ -1,21 +1,14 @@
 //! # Serial Peripheral Interface - Slave Mode
 //!
 //! ## Overview
+//! In this mode, the SPI acts as slave and transfers data with its master when
+//! its CS is asserted.
 //!
-//! There are multiple ways to use SPI, depending on your needs. Regardless of
-//! which way you choose, you must first create an SPI instance with
-//! [`Spi::new`].
+//! ## Configuration
+//! The SPI slave driver allows using full-duplex and can only be used with DMA.
 //!
 //! ## Example
-//!
-//! There are several options for working with the SPI peripheral in slave mode,
-//! but the code currently only supports single transfers (not segmented
-//! transfers), full duplex, single bit (not dual or quad SPI), and DMA mode
-//! (not CPU mode). It also does not support blocking operations, as the actual
-//! transfer is controlled by the SPI master; if these are necessary,
-//! then the DmaTransfer trait instance can be wait()ed on or polled for
-//! is_done().
-//!
+//! ### SPI Slave with DMA
 //! ```rust, no_run
 #![doc = crate::before_snippet!()]
 //! # use esp_hal::dma::DmaPriority;
@@ -57,6 +50,18 @@
 //! transfer.wait().unwrap();
 //! # }
 //! ```
+//! 
+//! ## Implementation State
+//! There are several options for working with the SPI peripheral in slave mode,
+//! but the code currently only supports single transfers (not segmented
+//! transfers), full duplex, single bit (not dual or quad SPI), and DMA mode
+//! (not CPU mode). It also does not support blocking operations, as the actual
+//! transfer is controlled by the SPI master; if these are necessary,
+//! then the DmaTransfer trait instance can be wait()ed on or polled for
+//! is_done().
+//! - ESP32 does not support SPI Slave. See [tracking issue].
+//!
+//! [tracking issue]: https://github.com/esp-rs/esp-hal/issues/469
 
 use core::marker::PhantomData;
 
@@ -138,9 +143,8 @@ where
     }
 }
 
+/// DMA (Direct Memory Access) funtionality (Slave).
 pub mod dma {
-    use embedded_dma::{ReadBuffer, WriteBuffer};
-
     use super::*;
     #[cfg(spi3)]
     use crate::dma::Spi3Peripheral;
@@ -148,26 +152,33 @@ pub mod dma {
         dma::{
             dma_private::{DmaSupport, DmaSupportRx, DmaSupportTx},
             Channel,
-            ChannelTypes,
+            ChannelRx,
+            ChannelTx,
             DescriptorChain,
+            DmaChannel,
             DmaDescriptor,
             DmaTransferRx,
             DmaTransferTx,
             DmaTransferTxRx,
+            ReadBuffer,
             RxPrivate,
             Spi2Peripheral,
             SpiPeripheral,
             TxPrivate,
+            WriteBuffer,
         },
         Mode,
     };
 
+    /// Trait for configuring DMA with SPI2 peripherals in slave mode.
     pub trait WithDmaSpi2<'d, C, DmaMode>
     where
-        C: ChannelTypes,
+        C: DmaChannel,
         C::P: SpiPeripheral,
         DmaMode: Mode,
     {
+        /// Configures the SPI2 peripheral with the provided DMA channel and
+        /// descriptors.
         fn with_dma(
             self,
             channel: Channel<'d, C, DmaMode>,
@@ -176,13 +187,16 @@ pub mod dma {
         ) -> SpiDma<'d, crate::peripherals::SPI2, C, DmaMode>;
     }
 
+    /// Trait for configuring DMA with SPI3 peripherals in slave mode.
     #[cfg(spi3)]
     pub trait WithDmaSpi3<'d, C, DmaMode>
     where
-        C: ChannelTypes,
+        C: DmaChannel,
         C::P: SpiPeripheral,
         DmaMode: Mode,
     {
+        /// Configures the SPI3 peripheral with the provided DMA channel and
+        /// descriptors.
         fn with_dma(
             self,
             channel: Channel<'d, C, DmaMode>,
@@ -194,7 +208,7 @@ pub mod dma {
     impl<'d, C, DmaMode> WithDmaSpi2<'d, C, DmaMode>
         for Spi<'d, crate::peripherals::SPI2, FullDuplexMode>
     where
-        C: ChannelTypes,
+        C: DmaChannel,
         C::P: SpiPeripheral + Spi2Peripheral,
         DmaMode: Mode,
     {
@@ -219,7 +233,7 @@ pub mod dma {
     impl<'d, C, DmaMode> WithDmaSpi3<'d, C, DmaMode>
         for Spi<'d, crate::peripherals::SPI3, FullDuplexMode>
     where
-        C: ChannelTypes,
+        C: DmaChannel,
         C::P: SpiPeripheral + Spi3Peripheral,
         DmaMode: Mode,
     {
@@ -243,7 +257,7 @@ pub mod dma {
     /// A DMA capable SPI instance.
     pub struct SpiDma<'d, T, C, DmaMode>
     where
-        C: ChannelTypes,
+        C: DmaChannel,
         C::P: SpiPeripheral,
         DmaMode: Mode,
     {
@@ -255,7 +269,7 @@ pub mod dma {
 
     impl<'d, T, C, DmaMode> core::fmt::Debug for SpiDma<'d, T, C, DmaMode>
     where
-        C: ChannelTypes,
+        C: DmaChannel,
         C::P: SpiPeripheral,
         DmaMode: Mode,
     {
@@ -266,8 +280,8 @@ pub mod dma {
 
     impl<'d, T, C, DmaMode> DmaSupport for SpiDma<'d, T, C, DmaMode>
     where
-        T: InstanceDma<C::Tx<'d>, C::Rx<'d>>,
-        C: ChannelTypes,
+        T: InstanceDma<ChannelTx<'d, C>, ChannelRx<'d, C>>,
+        C: DmaChannel,
         C::P: SpiPeripheral,
         DmaMode: Mode,
     {
@@ -287,12 +301,12 @@ pub mod dma {
 
     impl<'d, T, C, DmaMode> DmaSupportTx for SpiDma<'d, T, C, DmaMode>
     where
-        T: InstanceDma<C::Tx<'d>, C::Rx<'d>>,
-        C: ChannelTypes,
+        T: InstanceDma<ChannelTx<'d, C>, ChannelRx<'d, C>>,
+        C: DmaChannel,
         C::P: SpiPeripheral,
         DmaMode: Mode,
     {
-        type TX = C::Tx<'d>;
+        type TX = ChannelTx<'d, C>;
 
         fn tx(&mut self) -> &mut Self::TX {
             &mut self.channel.tx
@@ -305,12 +319,12 @@ pub mod dma {
 
     impl<'d, T, C, DmaMode> DmaSupportRx for SpiDma<'d, T, C, DmaMode>
     where
-        T: InstanceDma<C::Tx<'d>, C::Rx<'d>>,
-        C: ChannelTypes,
+        T: InstanceDma<ChannelTx<'d, C>, ChannelRx<'d, C>>,
+        C: DmaChannel,
         C::P: SpiPeripheral,
         DmaMode: Mode,
     {
-        type RX = C::Rx<'d>;
+        type RX = ChannelRx<'d, C>;
 
         fn rx(&mut self) -> &mut Self::RX {
             &mut self.channel.rx
@@ -323,8 +337,8 @@ pub mod dma {
 
     impl<'d, T, C, DmaMode> SpiDma<'d, T, C, DmaMode>
     where
-        T: InstanceDma<C::Tx<'d>, C::Rx<'d>>,
-        C: ChannelTypes,
+        T: InstanceDma<ChannelTx<'d, C>, ChannelRx<'d, C>>,
+        C: DmaChannel,
         C::P: SpiPeripheral,
         DmaMode: Mode,
     {
@@ -337,9 +351,9 @@ pub mod dma {
         pub fn dma_write<'t, TXBUF>(
             &'t mut self,
             words: &'t TXBUF,
-        ) -> Result<DmaTransferTx<Self>, Error>
+        ) -> Result<DmaTransferTx<'_, Self>, Error>
         where
-            TXBUF: ReadBuffer<Word = u8>,
+            TXBUF: ReadBuffer,
         {
             let (ptr, len) = unsafe { words.read_buffer() };
 
@@ -363,9 +377,9 @@ pub mod dma {
         pub fn dma_read<'t, RXBUF>(
             &'t mut self,
             words: &'t mut RXBUF,
-        ) -> Result<DmaTransferRx<Self>, Error>
+        ) -> Result<DmaTransferRx<'_, Self>, Error>
         where
-            RXBUF: WriteBuffer<Word = u8>,
+            RXBUF: WriteBuffer,
         {
             let (ptr, len) = unsafe { words.write_buffer() };
 
@@ -391,10 +405,10 @@ pub mod dma {
             &'t mut self,
             words: &'t TXBUF,
             read_buffer: &'t mut RXBUF,
-        ) -> Result<DmaTransferTxRx<Self>, Error>
+        ) -> Result<DmaTransferTxRx<'_, Self>, Error>
         where
-            TXBUF: ReadBuffer<Word = u8>,
-            RXBUF: WriteBuffer<Word = u8>,
+            TXBUF: ReadBuffer,
+            RXBUF: WriteBuffer,
         {
             let (write_ptr, write_len) = unsafe { words.read_buffer() };
             let (read_ptr, read_len) = unsafe { read_buffer.write_buffer() };

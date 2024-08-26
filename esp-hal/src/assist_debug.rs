@@ -1,27 +1,33 @@
-//! # Debug Assistant
+//! # Debug Assistant (ASSIST_DEBUG)
 //!
 //! ## Overview
-//! The Assist Debug driver provides functionality for debugging and monitoring
-//! features on ESP chips. It includes capabilities such as monitoring stack
-//! pointer (SP), monitoring memory regions, and handling interrupts related to
-//! debugging.
-//!
 //! Debug Assistant is an auxiliary module that features a set of functions to
-//! help locate bugs and issues during software debugging.
+//! help locate bugs and issues during software debugging. It includes
+//! capabilities such as monitoring stack pointer (SP), monitoring memory
+//! regions, and handling interrupts related to debugging.
 //!
+//!
+//! ## Configuration
 //! While all the targets support program counter (PC) logging it's API is not
 //! exposed here. Instead the ROM bootloader will always enable it and print the
 //! last seen PC (e.g. _Saved PC:0x42002ff2_). Make sure the reset was triggered
 //! by a TIMG watchdog. Not an RTC or SWD watchdog.
 //!
-//! ⚠️ Bus write access logging is not available via this API. ⚠️
+//! ## Examples
+//! Visit the [Debug Assist] example for an example of using the Debug
+//! Assistant.
 //!
-//! ⚠️ This driver has only blocking API. ⚠️
+//! [Debug Assist]: https://github.com/esp-rs/esp-hal/blob/main/examples/src/bin/debug_assist.rs
+//!
+//! ## Implementation State
+//! - Bus write access logging is not available via this API
+//! - This driver has only blocking API
 
 use crate::{
     interrupt::InterruptHandler,
     peripheral::{Peripheral, PeripheralRef},
     peripherals::ASSIST_DEBUG,
+    InterruptConfigurable,
 };
 
 /// The debug assist driver instance.
@@ -31,39 +37,38 @@ pub struct DebugAssist<'d> {
 
 impl<'d> DebugAssist<'d> {
     /// Create a new instance in [crate::Blocking] mode.
-    ///
-    /// Optionally an interrupt handler can be bound.
-    pub fn new(
-        debug_assist: impl Peripheral<P = ASSIST_DEBUG> + 'd,
-        interrupt: Option<InterruptHandler>,
-    ) -> Self {
+    pub fn new(debug_assist: impl Peripheral<P = ASSIST_DEBUG> + 'd) -> Self {
         crate::into_ref!(debug_assist);
 
         // NOTE: We should enable the debug assist, however, it's always enabled in ROM
         //       code already.
 
-        if let Some(interrupt) = interrupt {
-            unsafe {
-                crate::interrupt::bind_interrupt(
-                    crate::peripherals::Interrupt::ASSIST_DEBUG,
-                    interrupt.handler(),
-                );
-                crate::interrupt::enable(
-                    crate::peripherals::Interrupt::ASSIST_DEBUG,
-                    interrupt.priority(),
-                )
-                .unwrap();
-            }
-        }
-
         DebugAssist { debug_assist }
+    }
+}
+
+impl<'d> crate::private::Sealed for DebugAssist<'d> {}
+
+impl<'d> InterruptConfigurable for DebugAssist<'d> {
+    fn set_interrupt_handler(&mut self, handler: InterruptHandler) {
+        unsafe {
+            crate::interrupt::bind_interrupt(
+                crate::peripherals::Interrupt::ASSIST_DEBUG,
+                handler.handler(),
+            );
+            crate::interrupt::enable(
+                crate::peripherals::Interrupt::ASSIST_DEBUG,
+                handler.priority(),
+            )
+            .unwrap();
+        }
     }
 }
 
 #[cfg(assist_debug_sp_monitor)]
 impl<'d> DebugAssist<'d> {
     /// Enable SP monitoring on main core. When the SP exceeds the
-    /// `lower_bound` or `upper_bound` treshold, the module will record the PC
+    /// `lower_bound` or `upper_bound` threshold, the module will record the PC
     /// pointer and generate an interrupt.
     pub fn enable_sp_monitor(&mut self, lower_bound: u32, upper_bound: u32) {
         self.debug_assist
@@ -145,8 +150,8 @@ impl<'d> DebugAssist<'d> {
 
 #[cfg(all(assist_debug_sp_monitor, multi_core))]
 impl<'d> DebugAssist<'d> {
-    /// Enable SP monitoring on secondondary core. When the SP exceeds the
-    /// `lower_bound` or `upper_bound` treshold, the module will record the PC
+    /// Enable SP monitoring on secondary core. When the SP exceeds the
+    /// `lower_bound` or `upper_bound` threshold, the module will record the PC
     /// pointer and generate an interrupt.
     pub fn enable_core1_sp_monitor(&mut self, lower_bound: u32, upper_bound: u32) {
         self.debug_assist
@@ -379,7 +384,7 @@ impl<'d> DebugAssist<'d> {
                 .bit_is_set()
     }
 
-    /// Get region monotoring PC value on main core.
+    /// Get region monitoring PC value on main core.
     pub fn get_region_monitor_pc(&self) -> u32 {
         self.debug_assist
             .core_0_area_pc()
@@ -545,7 +550,7 @@ impl<'d> DebugAssist<'d> {
                 .bit_is_set()
     }
 
-    /// Get region monotoring PC value on secondary core.
+    /// Get region monitoring PC value on secondary core.
     pub fn get_core1_region_monitor_pc(&self) -> u32 {
         self.debug_assist
             .core_1_area_pc()

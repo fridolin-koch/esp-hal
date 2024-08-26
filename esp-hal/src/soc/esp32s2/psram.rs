@@ -17,6 +17,7 @@
 //! `4MB`, and `8MB`.
 const PSRAM_VADDR: u32 = 0x3f500000;
 
+/// Returns the start address of the PSRAM virtual address space.
 pub fn psram_vaddr_start() -> usize {
     PSRAM_VADDR_START
 }
@@ -33,19 +34,23 @@ cfg_if::cfg_if! {
     }
 }
 
+/// The total size of the PSRAM in bytes, calculated from the PSRAM size
+/// constant.
 pub const PSRAM_BYTES: usize = PSRAM_SIZE as usize * 1024 * 1024;
 
+/// The start address of the PSRAM virtual address space.
 pub const PSRAM_VADDR_START: usize = PSRAM_VADDR as usize;
 
+/// Initialize PSRAM to be used for data.
 #[cfg(any(feature = "psram-2m", feature = "psram-4m", feature = "psram-8m"))]
 pub fn init_psram(_peripheral: impl crate::peripheral::Peripheral<P = crate::peripherals::PSRAM>) {
     #[allow(unused)]
     enum CacheLayout {
-        CacheMemoryInvalid    = 0,
-        CacheMemoryICacheLow  = 1 << 0,
-        CacheMemoryICacheHigh = 1 << 1,
-        CacheMemoryDCacheLow  = 1 << 2,
-        CacheMemoryDCacheHigh = 1 << 3,
+        Invalid    = 0,
+        ICacheLow  = 1 << 0,
+        ICacheHigh = 1 << 1,
+        DCacheLow  = 1 << 2,
+        DCacheHigh = 1 << 3,
     }
 
     const MMU_ACCESS_SPIRAM: u32 = 1 << 16;
@@ -102,10 +107,10 @@ pub fn init_psram(_peripheral: impl crate::peripheral::Peripheral<P = crate::per
 
     unsafe {
         Cache_Allocate_SRAM(
-            CacheLayout::CacheMemoryICacheLow as u32,
-            CacheLayout::CacheMemoryDCacheLow as u32,
-            CacheLayout::CacheMemoryInvalid as u32,
-            CacheLayout::CacheMemoryInvalid as u32,
+            CacheLayout::ICacheLow as u32,
+            CacheLayout::DCacheLow as u32,
+            CacheLayout::Invalid as u32,
+            CacheLayout::Invalid as u32,
         );
         Cache_Set_DCache_Mode(CACHE_SIZE_8KB, CACHE_4WAYS_ASSOC, CACHE_LINE_SIZE_16B);
         Cache_Invalidate_DCache_All();
@@ -149,10 +154,7 @@ pub(crate) mod utils {
         psram_reset_mode();
         psram_enable_qio_mode();
 
-        psram_cache_init(
-            PsramCacheSpeed::PsramCacheMax,
-            PsramVaddrMode::PsramVaddrModeNormal,
-        );
+        psram_cache_init(PsramCacheSpeed::PsramCacheMax, PsramVaddrMode::Normal);
     }
 
     // send reset command to psram, in spi mode
@@ -220,6 +222,7 @@ pub(crate) mod utils {
         PsramCmdSpi = 1,
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn psram_exec_cmd(
         mode: CommandMode,
         cmd: u16,
@@ -284,6 +287,7 @@ pub(crate) mod utils {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn _psram_exec_cmd(
         cmd: u16,
         cmd_bit_len: u16,
@@ -443,13 +447,13 @@ pub(crate) mod utils {
     #[allow(unused)]
     enum PsramVaddrMode {
         /// App and pro CPU use their own flash cache for external RAM access
-        PsramVaddrModeNormal = 0,
+        Normal = 0,
         /// App and pro CPU share external RAM caches: pro CPU has low2M, app
         /// CPU has high 2M
-        PsramVaddrModeLowhigh,
+        Lowhigh,
         /// App and pro CPU share external RAM caches: pro CPU does even 32yte
         /// ranges, app does odd ones.
-        PsramVaddrModeEvenodd,
+        Evenodd,
     }
 
     const PSRAM_IO_MATRIX_DUMMY_20M: u32 = 0;
@@ -481,128 +485,83 @@ pub(crate) mod utils {
             }
         }
 
-        const REG_SPI_MEM_BASE: u32 = 0x3f403000;
-        const SPI_MEM_CACHE_SCTRL_REG: u32 = REG_SPI_MEM_BASE + 0x40;
-        const SPI_MEM_SRAM_DWR_CMD_REG: u32 = REG_SPI_MEM_BASE + 0x4c;
-        const SPI_MEM_SRAM_DRD_CMD_REG: u32 = REG_SPI_MEM_BASE + 0x48;
-        const SPI_MEM_MISC_REG: u32 = REG_SPI_MEM_BASE + 0x34;
-
-        const SPI_MEM_USR_SRAM_DIO_M: u32 = 1 << 1;
-        const SPI_MEM_USR_SRAM_QIO_M: u32 = 1 << 2;
-        const SPI_MEM_CACHE_SRAM_USR_RCMD_M: u32 = 1 << 5;
-        const SPI_MEM_CACHE_SRAM_USR_WCMD_M: u32 = 1 << 20;
-        const SPI_MEM_SRAM_ADDR_BITLEN_V: u32 = 0x3f;
-        const SPI_MEM_SRAM_ADDR_BITLEN_S: u32 = 14;
-        const SPI_MEM_USR_RD_SRAM_DUMMY_M: u32 = 1 << 4;
-        const SPI_MEM_CACHE_SRAM_USR_WR_CMD_BITLEN: u32 = 0x0000000F;
-        const SPI_MEM_CACHE_SRAM_USR_WR_CMD_BITLEN_S: u32 = 28;
-        const SPI_MEM_CACHE_SRAM_USR_WR_CMD_VALUE: u32 = 0x0000FFFF;
         const PSRAM_QUAD_WRITE: u32 = 0x38;
-        const SPI_MEM_CACHE_SRAM_USR_WR_CMD_VALUE_S: u32 = 0;
-        const SPI_MEM_CACHE_SRAM_USR_RD_CMD_BITLEN_V: u32 = 0xF;
-        const SPI_MEM_CACHE_SRAM_USR_RD_CMD_BITLEN_S: u32 = 28;
-        const SPI_MEM_CACHE_SRAM_USR_RD_CMD_VALUE_V: u32 = 0xFFFF;
         const PSRAM_FAST_READ_QUAD: u32 = 0xEB;
-        const SPI_MEM_CACHE_SRAM_USR_RD_CMD_VALUE_S: u32 = 0;
-        const SPI_MEM_SRAM_RDUMMY_CYCLELEN_V: u32 = 0xFF;
         const PSRAM_FAST_READ_QUAD_DUMMY: u32 = 0x5;
-        const SPI_MEM_SRAM_RDUMMY_CYCLELEN_S: u32 = 6;
-        const SPI_MEM_CS1_DIS_M: u32 = 1 << 1;
 
-        fn clear_peri_reg_mask(reg: u32, mask: u32) {
-            unsafe {
-                (reg as *mut u32).write_volatile((reg as *mut u32).read_volatile() & !mask);
-            }
+        unsafe {
+            let spi = &*crate::peripherals::SPI0::PTR;
+
+            spi.cache_sctrl()
+                .modify(|_, w| w.usr_sram_dio().clear_bit()); // disable dio mode for cache command
+
+            spi.cache_sctrl().modify(|_, w| w.usr_sram_qio().set_bit()); // enable qio mode for cache command
+
+            spi.cache_sctrl()
+                .modify(|_, w| w.cache_sram_usr_rcmd().set_bit()); // enable cache read command
+
+            spi.cache_sctrl()
+                .modify(|_, w| w.cache_sram_usr_wcmd().set_bit()); // enable cache write command
+
+            // write address for cache command.
+            spi.cache_sctrl()
+                .modify(|_, w| w.sram_addr_bitlen().bits(23));
+
+            spi.cache_sctrl()
+                .modify(|_, w| w.usr_rd_sram_dummy().set_bit()); // enable cache read dummy
+
+            // config sram cache r/w command
+            spi.sram_dwr_cmd()
+                .modify(|_, w| w.cache_sram_usr_wr_cmd_bitlen().bits(7));
+
+            spi.sram_dwr_cmd().modify(|_, w| {
+                w.cache_sram_usr_wr_cmd_bitlen()
+                    .bits(PSRAM_QUAD_WRITE as u8)
+            });
+
+            spi.sram_dwr_cmd().modify(|_, w| {
+                w.cache_sram_usr_wr_cmd_value()
+                    .bits(PSRAM_QUAD_WRITE as u16)
+            });
+
+            spi.sram_drd_cmd()
+                .modify(|_, w| w.cache_sram_usr_rd_cmd_bitlen().bits(7));
+
+            spi.sram_drd_cmd().modify(|_, w| {
+                w.cache_sram_usr_rd_cmd_value()
+                    .bits(PSRAM_FAST_READ_QUAD as u16)
+            });
+
+            // dummy, psram cache :  40m--+1dummy,80m--+2dummy
+            spi.cache_sctrl().modify(|_, w| {
+                w.sram_rdummy_cyclelen()
+                    .bits((PSRAM_FAST_READ_QUAD_DUMMY + extra_dummy) as u8)
+            });
+
+            // ESP-IDF has some code here to deal with `!CONFIG_FREERTOS_UNICORE` - not
+            // needed for ESP32-S2
+
+            // ENABLE SPI0 CS1 TO PSRAM(CS0--FLASH; CS1--SRAM)
+            spi.misc().modify(|_, w| w.cs1_dis().clear_bit());
         }
-
-        fn set_peri_reg_mask(reg: u32, mask: u32) {
-            unsafe {
-                (reg as *mut u32).write_volatile((reg as *mut u32).read_volatile() | mask);
-            }
-        }
-
-        fn set_peri_reg_bits(reg: u32, bitmap: u32, value: u32, shift: u32) {
-            unsafe {
-                (reg as *mut u32).write_volatile(
-                    ((reg as *mut u32).read_volatile() & !(bitmap << shift))
-                        | ((value & bitmap) << shift),
-                );
-            }
-        }
-
-        clear_peri_reg_mask(SPI_MEM_CACHE_SCTRL_REG, SPI_MEM_USR_SRAM_DIO_M); // disable dio mode for cache command
-        set_peri_reg_mask(SPI_MEM_CACHE_SCTRL_REG, SPI_MEM_USR_SRAM_QIO_M); // enable qio mode for cache command
-        set_peri_reg_mask(SPI_MEM_CACHE_SCTRL_REG, SPI_MEM_CACHE_SRAM_USR_RCMD_M); // enable cache read command
-        set_peri_reg_mask(SPI_MEM_CACHE_SCTRL_REG, SPI_MEM_CACHE_SRAM_USR_WCMD_M); // enable cache write command
-        set_peri_reg_bits(
-            SPI_MEM_CACHE_SCTRL_REG,
-            SPI_MEM_SRAM_ADDR_BITLEN_V,
-            23,
-            SPI_MEM_SRAM_ADDR_BITLEN_S,
-        ); // write address for cache command.
-        set_peri_reg_mask(SPI_MEM_CACHE_SCTRL_REG, SPI_MEM_USR_RD_SRAM_DUMMY_M); // enable cache read dummy
-
-        // config sram cache r/w command
-        set_peri_reg_bits(
-            SPI_MEM_SRAM_DWR_CMD_REG,
-            SPI_MEM_CACHE_SRAM_USR_WR_CMD_BITLEN,
-            7,
-            SPI_MEM_CACHE_SRAM_USR_WR_CMD_BITLEN_S,
-        );
-        set_peri_reg_bits(
-            SPI_MEM_SRAM_DWR_CMD_REG,
-            SPI_MEM_CACHE_SRAM_USR_WR_CMD_VALUE,
-            PSRAM_QUAD_WRITE,
-            SPI_MEM_CACHE_SRAM_USR_WR_CMD_VALUE_S,
-        ); // 0x38
-        set_peri_reg_bits(
-            SPI_MEM_SRAM_DRD_CMD_REG,
-            SPI_MEM_CACHE_SRAM_USR_RD_CMD_BITLEN_V,
-            7,
-            SPI_MEM_CACHE_SRAM_USR_RD_CMD_BITLEN_S,
-        );
-        set_peri_reg_bits(
-            SPI_MEM_SRAM_DRD_CMD_REG,
-            SPI_MEM_CACHE_SRAM_USR_RD_CMD_VALUE_V,
-            PSRAM_FAST_READ_QUAD,
-            SPI_MEM_CACHE_SRAM_USR_RD_CMD_VALUE_S,
-        ); // 0x0b
-        set_peri_reg_bits(
-            SPI_MEM_CACHE_SCTRL_REG,
-            SPI_MEM_SRAM_RDUMMY_CYCLELEN_V,
-            PSRAM_FAST_READ_QUAD_DUMMY + extra_dummy,
-            SPI_MEM_SRAM_RDUMMY_CYCLELEN_S,
-        ); // dummy, psram cache :  40m--+1dummy,80m--+2dummy
-
-        // ESP-IDF has some code here to deal with `!CONFIG_FREERTOS_UNICORE` - not
-        // needed for ESP32-S2
-
-        // ENABLE SPI0 CS1 TO PSRAM(CS0--FLASH; CS1--SRAM)
-        clear_peri_reg_mask(SPI_MEM_MISC_REG, SPI_MEM_CS1_DIS_M);
     }
 
     fn psram_clock_set(freqdiv: i8) {
-        const REG_SPI_MEM_BASE: u32 = 0x3f403000;
-        const SPI_MEM_SRAM_CLK_REG: u32 = REG_SPI_MEM_BASE + 0x50;
-
-        const SPI_MEM_SCLK_EQU_SYSCLK: u32 = 1 << 31;
         const SPI_MEM_SCLKCNT_N_S: u32 = 16;
         const SPI_MEM_SCLKCNT_H_S: u32 = 8;
         const SPI_MEM_SCLKCNT_L_S: u32 = 0;
 
-        fn write_peri_reg(reg: u32, val: u32) {
-            unsafe {
-                (reg as *mut u32).write_volatile(val);
-            }
-        }
+        let spi = unsafe { &*crate::peripherals::SPI0::PTR };
 
         if 1 >= freqdiv {
-            write_peri_reg(SPI_MEM_SRAM_CLK_REG, SPI_MEM_SCLK_EQU_SYSCLK);
+            spi.sram_clk().modify(|_, w| w.sclk_equ_sysclk().set_bit());
         } else {
             let freqbits: u32 = (((freqdiv - 1) as u32) << SPI_MEM_SCLKCNT_N_S)
                 | (((freqdiv / 2 - 1) as u32) << SPI_MEM_SCLKCNT_H_S)
                 | (((freqdiv - 1) as u32) << SPI_MEM_SCLKCNT_L_S);
-            write_peri_reg(SPI_MEM_SRAM_CLK_REG, freqbits);
+            unsafe {
+                spi.sram_clk().modify(|_, w| w.bits(freqbits));
+            }
         }
     }
 }

@@ -52,18 +52,11 @@ fn main() -> ! {
     let (tx_pin, rx_pin) = (io.pins.gpio43, io.pins.gpio44);
     #[cfg(feature = "esp32s3")]
     let (tx_pin, rx_pin) = (io.pins.gpio43, io.pins.gpio44);
-    let config = Config::default();
-    config.rx_fifo_full_threshold(30);
+    let config = Config::default().rx_fifo_full_threshold(30);
 
-    let mut uart0 = Uart::new_with_config(
-        peripherals.UART0,
-        config,
-        &clocks,
-        Some(interrupt_handler),
-        tx_pin,
-        rx_pin,
-    )
-    .unwrap();
+    let mut uart0 =
+        Uart::new_with_config(peripherals.UART0, config, &clocks, tx_pin, rx_pin).unwrap();
+    uart0.set_interrupt_handler(interrupt_handler);
 
     critical_section::with(|cs| {
         uart0.set_at_cmd(AtCmdConfig::new(None, None, None, b'#', None));

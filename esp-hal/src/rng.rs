@@ -1,25 +1,10 @@
-//! # Random Number Generator
+//! # Random Number Generator (RNG)
 //!
 //! ## Overview
-//! The Random Number Generator (RNG) Driver for ESP chips is a software module
-//! that provides an interface to generate random numbers using the RNG
-//! peripheral on ESP chips. This driver allows you to generate random numbers
-//! that can be used for various cryptographic, security, or general-purpose
-//! applications.
-//!
-//! The RNG peripheral on ESP chips produces random numbers based on physical
-//! noise sources, which provide true random numbers under specific conditions
-//! (see conditions below).
-//!
-//! To use the [Rng] Driver, you need to initialize it with the RNG peripheral.
-//! Once initialized, you can generate random numbers by calling the `random`
-//! method, which returns a 32-bit unsigned integer.
-//!
-//! Additionally, this driver implements the
-//! [Read](embedded_hal_02::blocking::rng::Read) trait from the `embedded_hal`
-//! crate, allowing you to generate random bytes by calling the `read` method.
-//
-//! # Important Note
+//! The Random Number Generator (RNG) module provides an interface to generate
+//! random numbers using the RNG peripheral on ESP chips. This driver allows you
+//! to generate random numbers that can be used for various cryptographic,
+//! security, or general-purpose applications.
 //!
 //! There are certain pre-conditions which must be met in order for the RNG to
 //! produce *true* random numbers. The hardware RNG produces true random numbers
@@ -41,6 +26,23 @@
 //!
 //! For more information, please refer to the
 #![doc = concat!("[ESP-IDF documentation](https://docs.espressif.com/projects/esp-idf/en/latest/", crate::soc::chip!(), "/api-reference/system/random.html)")]
+//! ## Configuration
+//! To use the [Rng] Driver, you need to initialize it with the RNG peripheral.
+//! Once initialized, you can generate random numbers by calling the `random`
+//! method, which returns a 32-bit unsigned integer.
+//!
+//! ## Usage
+//! This driver implements the [Read](embedded_hal_02::blocking::rng::Read)
+//! trait from the `embedded_hal` crate, allowing you to generate random bytes
+//! by calling the `read` method. The driver also implements the traits from the
+//! [`rand_core`] crate.
+//!
+//! [`rand_core`]: https://crates.io/crates/rand_core
+//!
+//! ## Examples
+//! Visit the [RNG] example for an example of using the RNG peripheral.
+//!
+//! [RNG]: https://github.com/esp-rs/esp-hal/blob/main/examples/src/bin/rng.rs
 
 use core::marker::PhantomData;
 
@@ -150,7 +152,7 @@ impl rand_core::RngCore for Rng {
 /// let mut trng = Trng::new(peripherals.RNG, &mut peripherals.ADC1);
 /// trng.read(&mut buf);
 /// let mut true_rand = trng.random();
-#[cfg_attr(not(esp32c6), doc = "let mut rng = trng.downgrade();")]
+/// let mut rng = trng.downgrade();
 /// // ADC is available now
 #[cfg_attr(esp32, doc = "let analog_pin = io.pins.gpio32;")]
 #[cfg_attr(not(esp32), doc = "let analog_pin = io.pins.gpio3;")]
@@ -159,8 +161,8 @@ impl rand_core::RngCore for Rng {
 /// Attenuation::Attenuation11dB); let mut adc1 =
 /// Adc::<ADC1>::new(peripherals.ADC1, adc1_config); let pin_value: u16 =
 /// nb::block!(adc1.read_oneshot(&mut adc1_pin)).unwrap();
-#[cfg_attr(not(esp32c6), doc = "rng.read(&mut buf);")]
-#[cfg_attr(not(esp32c6), doc = "true_rand = rng.random();")]
+/// rng.read(&mut buf);
+/// true_rand = rng.random();
 /// let pin_value: u16 = nb::block!(adc1.read_oneshot(&mut adc1_pin)).unwrap();
 /// # }
 /// ```
@@ -206,15 +208,11 @@ impl<'d> Trng<'d> {
 
     /// Downgrades the `Trng` instance to a `Rng` instance and releases the
     /// ADC1.
-    /// For esp32c6 - blocked on https://github.com/espressif/esp-idf/issues/14124
-    #[cfg(not(esp32c6))]
     pub fn downgrade(self) -> Rng {
         self.rng
     }
 }
 
-/// For esp32c6 - blocked on https://github.com/espressif/esp-idf/issues/14124
-#[cfg(not(esp32c6))]
 impl<'d> Drop for Trng<'d> {
     fn drop(&mut self) {
         crate::soc::trng::revert_trng();

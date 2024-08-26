@@ -71,44 +71,92 @@ pub unsafe extern "C" fn start_rust(a0: usize, a1: usize, a2: usize) -> ! {
 }
 
 /// Registers saved in trap handler
-#[allow(missing_docs)]
 #[derive(Debug, Default, Clone, Copy)]
 #[repr(C)]
 pub struct TrapFrame {
+    /// Return address, stores the address to return to after a function call or
+    /// interrupt.
     pub ra: usize,
+    /// Temporary register t0, used for intermediate values.
     pub t0: usize,
+    /// Temporary register t1, used for intermediate values.
     pub t1: usize,
+    /// Temporary register t2, used for intermediate values.
     pub t2: usize,
+    /// Temporary register t3, used for intermediate values.
     pub t3: usize,
+    /// Temporary register t4, used for intermediate values.
     pub t4: usize,
+    /// Temporary register t5, used for intermediate values.
     pub t5: usize,
+    /// Temporary register t6, used for intermediate values.
     pub t6: usize,
+    /// Argument register a0, typically used to pass the first argument to a
+    /// function.
     pub a0: usize,
+    /// Argument register a1, typically used to pass the second argument to a
+    /// function.
     pub a1: usize,
+    /// Argument register a2, typically used to pass the third argument to a
+    /// function.
     pub a2: usize,
+    /// Argument register a3, typically used to pass the fourth argument to a
+    /// function.
     pub a3: usize,
+    /// Argument register a4, typically used to pass the fifth argument to a
+    /// function.
     pub a4: usize,
+    /// Argument register a5, typically used to pass the sixth argument to a
+    /// function.
     pub a5: usize,
+    /// Argument register a6, typically used to pass the seventh argument to a
+    /// function.
     pub a6: usize,
+    /// Argument register a7, typically used to pass the eighth argument to a
+    /// function.
     pub a7: usize,
+    /// Saved register s0, used to hold values across function calls.
     pub s0: usize,
+    /// Saved register s1, used to hold values across function calls.
     pub s1: usize,
+    /// Saved register s2, used to hold values across function calls.
     pub s2: usize,
+    /// Saved register s3, used to hold values across function calls.
     pub s3: usize,
+    /// Saved register s4, used to hold values across function calls.
     pub s4: usize,
+    /// Saved register s5, used to hold values across function calls.
     pub s5: usize,
+    /// Saved register s6, used to hold values across function calls.
     pub s6: usize,
+    /// Saved register s7, used to hold values across function calls.
     pub s7: usize,
+    /// Saved register s8, used to hold values across function calls.
     pub s8: usize,
+    /// Saved register s9, used to hold values across function calls.
     pub s9: usize,
+    /// Saved register s10, used to hold values across function calls.
     pub s10: usize,
+    /// Saved register s11, used to hold values across function calls.
     pub s11: usize,
+    /// Global pointer register, holds the address of the global data area.
     pub gp: usize,
+    /// Thread pointer register, holds the address of the thread-local storage
+    /// area.
     pub tp: usize,
+    /// Stack pointer register, holds the address of the top of the stack.
     pub sp: usize,
+    /// Program counter, stores the address of the next instruction to be
+    /// executed.
     pub pc: usize,
+    /// Machine status register, holds the current status of the processor,
+    /// including interrupt enable bits and privilege mode.
     pub mstatus: usize,
+    /// Machine cause register, contains the reason for the trap (e.g.,
+    /// exception or interrupt number).
     pub mcause: usize,
+    /// Machine trap value register, contains additional information about the
+    /// trap (e.g., faulting address).
     pub mtval: usize,
 }
 
@@ -298,7 +346,6 @@ _abs_start:
     csrw mie, 0
     csrw mip, 0
 "#,
-#[cfg(feature = "zero-bss")]
     r#"
     la a0, _bss_start
     la a1, _bss_end
@@ -310,7 +357,7 @@ _abs_start:
     blt a0, a1, 1b
     2:
 "#,
-#[cfg(feature = "zero-rtc-fast-bss")]
+#[cfg(feature = "rtc-ram")]
     r#"
     la a0, _rtc_fast_bss_start
     la a1, _rtc_fast_bss_end
@@ -322,59 +369,20 @@ _abs_start:
     blt a0, a1, 1b
     2:
 "#,
-#[cfg(feature = "init-data")]
+    // Zero .rtc_fast.persistent iff the chip just powered on
+#[cfg(feature = "rtc-ram")]
     r#"
-    la a0, _data_start
-    la a1, _data_end
+    mv a0, zero
+    call rtc_get_reset_reason
+    addi a1, zero, 1
+    bne a0, a1, 2f
+    la a0, _rtc_fast_persistent_start
+    la a1, _rtc_fast_persistent_end
     bge a0, a1, 2f
-    la a2, _sidata
+    mv a3, x0
     1:
-    lw a3, 0(a2)
     sw a3, 0(a0)
     addi a0, a0, 4
-    addi a2, a2, 4
-    blt a0, a1, 1b
-    2:
-"#,
-#[cfg(feature = "init-rw-text")]
-    r#"
-    la a0, _srwtext
-    la a1, _erwtext
-    bge a0, a1, 2f
-    la a2, _irwtext
-    1:
-    lw a3, 0(a2)
-    sw a3, 0(a0)
-    addi a0, a0, 4
-    addi a2, a2, 4
-    blt a0, a1, 1b
-    2:
-"#,
-#[cfg(feature = "init-rtc-fast-data")]
-    r#"
-    la a0, _rtc_fast_data_start
-    la a1, _rtc_fast_data_end
-    bge a0, a1, 2f
-    la a2, _irtc_fast_data
-    1:
-    lw a3, 0(a2)
-    sw a3, 0(a0)
-    addi a0, a0, 4
-    addi a2, a2, 4
-    blt a0, a1, 1b
-    2:
-"#,
-#[cfg(feature = "init-rtc-fast-text")]
-    r#"
-    la a0, _srtc_fast_text
-    la a1, _ertc_fast_text
-    bge a0, a1, 2f
-    la a2, _irtc_fast_text
-    1:
-    lw a3, 0(a2)
-    sw a3, 0(a0)
-    addi a0, a0, 4
-    addi a2, a2, 4
     blt a0, a1, 1b
     2:
 "#,

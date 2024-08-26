@@ -7,8 +7,6 @@
 #![no_std]
 #![no_main]
 
-use defmt_rtt as _;
-use esp_backtrace as _;
 use esp_hal::{
     clock::ClockControl,
     gpio::Io,
@@ -17,6 +15,7 @@ use esp_hal::{
     rmt::{PulseCode, Rmt, RxChannel, RxChannelConfig, TxChannel, TxChannelConfig},
     system::SystemControl,
 };
+use hil_test as _;
 
 #[cfg(test)]
 #[embedded_test::tests]
@@ -43,7 +42,7 @@ mod tests {
             }
         };
 
-        let rmt = Rmt::new(peripherals.RMT, freq, &clocks, None).unwrap();
+        let rmt = Rmt::new(peripherals.RMT, freq, &clocks).unwrap();
 
         let tx_config = TxChannelConfig {
             clk_divider: 255,

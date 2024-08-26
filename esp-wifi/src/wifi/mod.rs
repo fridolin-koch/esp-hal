@@ -6,15 +6,23 @@ pub(crate) mod state;
 use core::{
     cell::{RefCell, RefMut},
     fmt::Debug,
-    mem,
-    mem::MaybeUninit,
+    mem::{self, MaybeUninit},
     ptr::addr_of,
     time::Duration,
 };
 
 use critical_section::{CriticalSection, Mutex};
 use enumset::{EnumSet, EnumSetType};
+#[cfg(feature = "sniffer")]
 use esp_wifi_sys::include::{
+    esp_wifi_80211_tx,
+    esp_wifi_set_promiscuous,
+    esp_wifi_set_promiscuous_rx_cb,
+    wifi_promiscuous_pkt_t,
+    wifi_promiscuous_pkt_type_t,
+};
+use esp_wifi_sys::include::{
+    wifi_pkt_rx_ctrl_t,
     WIFI_PROTOCOL_11AX,
     WIFI_PROTOCOL_11B,
     WIFI_PROTOCOL_11G,
@@ -25,6 +33,8 @@ use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 #[doc(hidden)]
 pub(crate) use os_adapter::*;
+#[cfg(feature = "sniffer")]
+use portable_atomic::AtomicBool;
 use portable_atomic::{AtomicUsize, Ordering};
 #[cfg(feature = "smoltcp")]
 use smoltcp::phy::{Device, DeviceCapabilities, RxToken, TxToken};
@@ -861,6 +871,7 @@ pub(crate) unsafe extern "C" fn coex_init() -> i32 {
     #[cfg(coex)]
     {
         debug!("coex-init");
+        #[allow(clippy::needless_return)]
         return include::coex_init();
     }
 
@@ -1769,10 +1780,208 @@ fn convert_ap_info(record: &include::wifi_ap_record_t) -> AccessPointInfo {
     }
 }
 
+#[cfg(not(any(esp32c6)))]
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct RxControlInfo {
+    pub rssi: i32,
+    pub rate: u32,
+    pub sig_mode: u32,
+    pub mcs: u32,
+    pub cwb: u32,
+    pub smoothing: u32,
+    pub not_sounding: u32,
+    pub aggregation: u32,
+    pub stbc: u32,
+    pub fec_coding: u32,
+    pub sgi: u32,
+    pub ampdu_cnt: u32,
+    pub channel: u32,
+    pub secondary_channel: u32,
+    pub timestamp: u32,
+    pub noise_floor: i32,
+    pub ant: u32,
+    pub sig_len: u32,
+    pub rx_state: u32,
+}
+
+#[cfg(esp32c6)]
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct RxControlInfo {
+    pub rssi: i32,
+    pub rate: u32,
+    pub sig_len: u32,
+    pub rx_state: u32,
+    pub dump_len: u32,
+    pub he_sigb_len: u32,
+    pub cur_single_mpdu: u32,
+    pub cur_bb_format: u32,
+    pub rx_channel_estimate_info_vld: u32,
+    pub rx_channel_estimate_len: u32,
+    pub second: u32,
+    pub channel: u32,
+    pub data_rssi: i32,
+    pub noise_floor: u32,
+    pub is_group: u32,
+    pub rxend_state: u32,
+    pub rxmatch3: u32,
+    pub rxmatch2: u32,
+    pub rxmatch1: u32,
+    pub rxmatch0: u32,
+}
+impl RxControlInfo {
+    /// Create an instance from a raw pointer to [wifi_pkt_rx_ctrl_t].
+    ///
+    /// # Safety
+    /// When calling this, you must ensure, that `rx_cntl` points to a valid
+    /// instance of [wifi_pkt_rx_ctrl_t].
+    pub unsafe fn from_raw(rx_cntl: *const wifi_pkt_rx_ctrl_t) -> Self {
+        #[cfg(not(esp32c6))]
+        let rx_control_info = RxControlInfo {
+            rssi: (*rx_cntl).rssi(),
+            rate: (*rx_cntl).rate(),
+            sig_mode: (*rx_cntl).sig_mode(),
+            mcs: (*rx_cntl).mcs(),
+            cwb: (*rx_cntl).cwb(),
+            smoothing: (*rx_cntl).smoothing(),
+            not_sounding: (*rx_cntl).not_sounding(),
+            aggregation: (*rx_cntl).aggregation(),
+            stbc: (*rx_cntl).stbc(),
+            fec_coding: (*rx_cntl).fec_coding(),
+            sgi: (*rx_cntl).sgi(),
+            ampdu_cnt: (*rx_cntl).ampdu_cnt(),
+            channel: (*rx_cntl).channel(),
+            secondary_channel: (*rx_cntl).secondary_channel(),
+            timestamp: (*rx_cntl).timestamp(),
+            noise_floor: (*rx_cntl).noise_floor(),
+            ant: (*rx_cntl).ant(),
+            sig_len: (*rx_cntl).sig_len(),
+            rx_state: (*rx_cntl).rx_state(),
+        };
+        #[cfg(esp32c6)]
+        let rx_control_info = RxControlInfo {
+            rssi: (*rx_cntl).rssi(),
+            rate: (*rx_cntl).rate(),
+            sig_len: (*rx_cntl).sig_len(),
+            rx_state: (*rx_cntl).rx_state(),
+            dump_len: (*rx_cntl).dump_len(),
+            he_sigb_len: (*rx_cntl).he_sigb_len(),
+            cur_single_mpdu: (*rx_cntl).cur_single_mpdu(),
+            cur_bb_format: (*rx_cntl).cur_bb_format(),
+            rx_channel_estimate_info_vld: (*rx_cntl).rx_channel_estimate_info_vld(),
+            rx_channel_estimate_len: (*rx_cntl).rx_channel_estimate_len(),
+            second: (*rx_cntl).second(),
+            channel: (*rx_cntl).channel(),
+            data_rssi: (*rx_cntl).data_rssi(),
+            noise_floor: (*rx_cntl).noise_floor(),
+            is_group: (*rx_cntl).is_group(),
+            rxend_state: (*rx_cntl).rxend_state(),
+            rxmatch3: (*rx_cntl).rxmatch3(),
+            rxmatch2: (*rx_cntl).rxmatch2(),
+            rxmatch1: (*rx_cntl).rxmatch1(),
+            rxmatch0: (*rx_cntl).rxmatch0(),
+        };
+        rx_control_info
+    }
+}
+#[cfg(feature = "sniffer")]
+pub struct PromiscuousPkt<'a> {
+    pub rx_cntl: RxControlInfo,
+    pub frame_type: wifi_promiscuous_pkt_type_t,
+    pub len: usize,
+    pub data: &'a [u8],
+}
+#[cfg(feature = "sniffer")]
+impl PromiscuousPkt<'_> {
+    /// # Safety
+    /// When calling this, you have to ensure, that `buf` points to a valid
+    /// [wifi_promiscuous_pkt_t].
+    pub(crate) unsafe fn from_raw(
+        buf: *const wifi_promiscuous_pkt_t,
+        frame_type: wifi_promiscuous_pkt_type_t,
+    ) -> Self {
+        let rx_cntl = RxControlInfo::from_raw(&(*buf).rx_ctrl);
+        let len = rx_cntl.sig_len as usize;
+        PromiscuousPkt {
+            rx_cntl,
+            frame_type,
+            len,
+            data: core::slice::from_raw_parts(
+                (buf as *const u8).add(size_of::<wifi_pkt_rx_ctrl_t>()),
+                len,
+            ),
+        }
+    }
+}
+
+#[cfg(feature = "sniffer")]
+static SNIFFER_CB: Mutex<RefCell<Option<fn(PromiscuousPkt)>>> = Mutex::new(RefCell::new(None));
+
+#[cfg(feature = "sniffer")]
+unsafe extern "C" fn promiscuous_rx_cb(buf: *mut core::ffi::c_void, frame_type: u32) {
+    critical_section::with(|cs| {
+        let Some(sniffer_callback) = *SNIFFER_CB.borrow_ref(cs) else {
+            return;
+        };
+        let promiscuous_pkt = PromiscuousPkt::from_raw(buf as *const _, frame_type);
+        sniffer_callback(promiscuous_pkt);
+    });
+}
+
+#[cfg(feature = "sniffer")]
+/// A wifi sniffer.
+pub struct Sniffer {
+    promiscuous_mode_enabled: AtomicBool,
+}
+#[cfg(feature = "sniffer")]
+impl Sniffer {
+    pub(crate) fn new() -> Self {
+        // This shouldn't fail, since the way this is created, means that wifi will
+        // always be initialized.
+        esp_wifi_result!(unsafe { esp_wifi_set_promiscuous_rx_cb(Some(promiscuous_rx_cb)) })
+            .unwrap();
+        Self {
+            promiscuous_mode_enabled: AtomicBool::new(false),
+        }
+    }
+    /// Set promiscuous mode enabled or disabled.
+    pub fn set_promiscuous_mode(&self, enabled: bool) -> Result<(), WifiError> {
+        esp_wifi_result!(unsafe { esp_wifi_set_promiscuous(enabled) })?;
+        self.promiscuous_mode_enabled
+            .store(enabled, Ordering::Relaxed);
+        Ok(())
+    }
+    /// Transmit a raw frame.
+    pub fn send_raw_frame(
+        &mut self,
+        use_sta_interface: bool,
+        buffer: &[u8],
+        use_internal_seq_num: bool,
+    ) -> Result<(), WifiError> {
+        esp_wifi_result!(unsafe {
+            esp_wifi_80211_tx(
+                if use_sta_interface { 0 } else { 1 } as wifi_interface_t,
+                buffer.as_ptr() as *const _,
+                buffer.len() as i32,
+                use_internal_seq_num,
+            )
+        })
+    }
+    /// Set the callback for receiving a packet.
+    pub fn set_receive_cb(&mut self, cb: fn(PromiscuousPkt)) {
+        critical_section::with(|cs| {
+            *SNIFFER_CB.borrow_ref_mut(cs) = Some(cb);
+        });
+    }
+}
+
 /// A wifi controller
 pub struct WifiController<'d> {
     _device: PeripheralRef<'d, crate::hal::peripherals::WIFI>,
     config: Configuration,
+    #[cfg(feature = "sniffer")]
+    sniffer_taken: AtomicBool,
 }
 
 impl<'d> WifiController<'d> {
@@ -1791,6 +2000,8 @@ impl<'d> WifiController<'d> {
         let mut this = Self {
             _device,
             config: Default::default(),
+            #[cfg(feature = "sniffer")]
+            sniffer_taken: AtomicBool::new(false),
         };
 
         let mode = WifiMode::try_from(&config)?;
@@ -1799,6 +2010,18 @@ impl<'d> WifiController<'d> {
 
         this.set_configuration(&config)?;
         Ok(this)
+    }
+    #[cfg(feature = "sniffer")]
+    pub fn take_sniffer(&self) -> Option<Sniffer> {
+        if self
+            .sniffer_taken
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            == Ok(false)
+        {
+            Some(Sniffer::new())
+        } else {
+            None
+        }
     }
 
     /// Set the wifi protocol.
@@ -2074,6 +2297,12 @@ fn apply_ap_config(config: &AccessPointConfiguration) -> Result<(), WifiError> {
         },
     };
 
+    if config.auth_method == AuthMethod::None && !config.password.is_empty() {
+        return Err(WifiError::InternalError(
+            InternalWifiError::EspErrInvalidArg,
+        ));
+    }
+
     unsafe {
         cfg.ap.ssid[0..(config.ssid.len())].copy_from_slice(config.ssid.as_bytes());
         cfg.ap.ssid_len = config.ssid.len() as u8;
@@ -2112,6 +2341,12 @@ fn apply_sta_config(config: &ClientConfiguration) -> Result<(), WifiError> {
             sae_h2e_identifier: [0; 32],
         },
     };
+
+    if config.auth_method == AuthMethod::None && !config.password.is_empty() {
+        return Err(WifiError::InternalError(
+            InternalWifiError::EspErrInvalidArg,
+        ));
+    }
 
     unsafe {
         cfg.sta.ssid[0..(config.ssid.len())].copy_from_slice(config.ssid.as_bytes());
@@ -2675,9 +2910,9 @@ impl Drop for FreeApListOnDrop {
 mod embedded_svc_compat {
     use super::*;
 
-    impl Into<embedded_svc::wifi::Capability> for Capability {
-        fn into(self) -> embedded_svc::wifi::Capability {
-            match self {
+    impl From<Capability> for embedded_svc::wifi::Capability {
+        fn from(s: Capability) -> embedded_svc::wifi::Capability {
+            match s {
                 Capability::Client => embedded_svc::wifi::Capability::Client,
                 Capability::AccessPoint => embedded_svc::wifi::Capability::AccessPoint,
                 Capability::Mixed => embedded_svc::wifi::Capability::Mixed,
@@ -2685,9 +2920,9 @@ mod embedded_svc_compat {
         }
     }
 
-    impl Into<embedded_svc::wifi::AuthMethod> for AuthMethod {
-        fn into(self) -> embedded_svc::wifi::AuthMethod {
-            match self {
+    impl From<AuthMethod> for embedded_svc::wifi::AuthMethod {
+        fn from(s: AuthMethod) -> embedded_svc::wifi::AuthMethod {
+            match s {
                 AuthMethod::None => embedded_svc::wifi::AuthMethod::None,
                 AuthMethod::WEP => embedded_svc::wifi::AuthMethod::WEP,
                 AuthMethod::WPA => embedded_svc::wifi::AuthMethod::WPA,
@@ -2717,9 +2952,9 @@ mod embedded_svc_compat {
         }
     }
 
-    impl Into<embedded_svc::wifi::Protocol> for Protocol {
-        fn into(self) -> embedded_svc::wifi::Protocol {
-            match self {
+    impl From<Protocol> for embedded_svc::wifi::Protocol {
+        fn from(s: Protocol) -> embedded_svc::wifi::Protocol {
+            match s {
                 Protocol::P802D11B => embedded_svc::wifi::Protocol::P802D11B,
                 Protocol::P802D11BG => embedded_svc::wifi::Protocol::P802D11BG,
                 Protocol::P802D11BGN => embedded_svc::wifi::Protocol::P802D11BGN,
@@ -2743,9 +2978,9 @@ mod embedded_svc_compat {
         }
     }
 
-    impl Into<embedded_svc::wifi::Configuration> for Configuration {
-        fn into(self) -> embedded_svc::wifi::Configuration {
-            match self {
+    impl From<Configuration> for embedded_svc::wifi::Configuration {
+        fn from(s: Configuration) -> embedded_svc::wifi::Configuration {
+            match s {
                 Configuration::None => embedded_svc::wifi::Configuration::None,
                 Configuration::Client(conf) => embedded_svc::wifi::Configuration::Client(
                     embedded_svc::wifi::ClientConfiguration {
@@ -2811,10 +3046,10 @@ mod embedded_svc_compat {
                 embedded_svc::wifi::Configuration::Client(conf) => {
                     Configuration::Client(ClientConfiguration {
                         ssid: conf.ssid.clone(),
-                        bssid: conf.bssid.clone(),
+                        bssid: conf.bssid,
                         auth_method: conf.auth_method.into(),
                         password: conf.password.clone(),
-                        channel: conf.channel.clone(),
+                        channel: conf.channel,
                     })
                 }
                 embedded_svc::wifi::Configuration::AccessPoint(conf) => {
@@ -2838,14 +3073,14 @@ mod embedded_svc_compat {
                 embedded_svc::wifi::Configuration::Mixed(client, ap) => Configuration::Mixed(
                     ClientConfiguration {
                         ssid: client.ssid.clone(),
-                        bssid: client.bssid.clone(),
+                        bssid: client.bssid,
                         auth_method: client.auth_method.into(),
                         password: client.password.clone(),
                         channel: client.channel,
                     },
                     AccessPointConfiguration {
                         ssid: ap.ssid.clone(),
-                        ssid_hidden: ap.ssid_hidden.clone(),
+                        ssid_hidden: ap.ssid_hidden,
                         channel: ap.channel,
                         secondary_channel: ap.secondary_channel,
                         protocols: {
@@ -2864,29 +3099,29 @@ mod embedded_svc_compat {
         }
     }
 
-    impl Into<embedded_svc::wifi::AccessPointInfo> for AccessPointInfo {
-        fn into(self) -> embedded_svc::wifi::AccessPointInfo {
+    impl From<AccessPointInfo> for embedded_svc::wifi::AccessPointInfo {
+        fn from(s: AccessPointInfo) -> embedded_svc::wifi::AccessPointInfo {
             embedded_svc::wifi::AccessPointInfo {
-                ssid: self.ssid.clone(),
-                bssid: self.bssid.clone(),
-                channel: self.channel,
-                secondary_channel: self.secondary_channel.into(),
-                signal_strength: self.signal_strength,
+                ssid: s.ssid.clone(),
+                bssid: s.bssid,
+                channel: s.channel,
+                secondary_channel: s.secondary_channel.into(),
+                signal_strength: s.signal_strength,
                 protocols: {
                     let mut res = EnumSet::<embedded_svc::wifi::Protocol>::new();
-                    self.protocols.into_iter().for_each(|v| {
+                    s.protocols.into_iter().for_each(|v| {
                         res.insert(v.into());
                     });
                     res
                 },
-                auth_method: self.auth_method.map(|v| v.into()),
+                auth_method: s.auth_method.map(|v| v.into()),
             }
         }
     }
 
-    impl Into<embedded_svc::wifi::SecondaryChannel> for SecondaryChannel {
-        fn into(self) -> embedded_svc::wifi::SecondaryChannel {
-            match self {
+    impl From<SecondaryChannel> for embedded_svc::wifi::SecondaryChannel {
+        fn from(s: SecondaryChannel) -> embedded_svc::wifi::SecondaryChannel {
+            match s {
                 SecondaryChannel::None => embedded_svc::wifi::SecondaryChannel::None,
                 SecondaryChannel::Above => embedded_svc::wifi::SecondaryChannel::Above,
                 SecondaryChannel::Below => embedded_svc::wifi::SecondaryChannel::Below,
@@ -2894,11 +3129,11 @@ mod embedded_svc_compat {
         }
     }
 
-    impl Into<embedded_svc::ipv4::Subnet> for crate::wifi::ipv4::Subnet {
-        fn into(self) -> embedded_svc::ipv4::Subnet {
+    impl From<crate::wifi::ipv4::Subnet> for embedded_svc::ipv4::Subnet {
+        fn from(s: crate::wifi::ipv4::Subnet) -> embedded_svc::ipv4::Subnet {
             embedded_svc::ipv4::Subnet {
-                gateway: embedded_svc::ipv4::Ipv4Addr::from(self.gateway.octets()),
-                mask: embedded_svc::ipv4::Mask(self.mask.0),
+                gateway: embedded_svc::ipv4::Ipv4Addr::from(s.gateway.octets()),
+                mask: embedded_svc::ipv4::Mask(s.mask.0),
             }
         }
     }
@@ -2912,15 +3147,15 @@ mod embedded_svc_compat {
         }
     }
 
-    impl Into<embedded_svc::ipv4::IpInfo> for super::ipv4::IpInfo {
-        fn into(self) -> embedded_svc::ipv4::IpInfo {
+    impl From<super::ipv4::IpInfo> for embedded_svc::ipv4::IpInfo {
+        fn from(s: super::ipv4::IpInfo) -> embedded_svc::ipv4::IpInfo {
             embedded_svc::ipv4::IpInfo {
-                ip: embedded_svc::ipv4::Ipv4Addr::from(self.ip.octets()),
-                subnet: self.subnet.into(),
-                dns: self
+                ip: embedded_svc::ipv4::Ipv4Addr::from(s.ip.octets()),
+                subnet: s.subnet.into(),
+                dns: s
                     .dns
                     .map(|v| embedded_svc::ipv4::Ipv4Addr::from(v.octets())),
-                secondary_dns: self
+                secondary_dns: s
                     .secondary_dns
                     .map(|v| embedded_svc::ipv4::Ipv4Addr::from(v.octets())),
             }
@@ -2967,9 +3202,9 @@ mod embedded_svc_compat {
         }
     }
 
-    impl Into<embedded_svc::ipv4::Configuration> for super::ipv4::Configuration {
-        fn into(self) -> embedded_svc::ipv4::Configuration {
-            match self {
+    impl From<super::ipv4::Configuration> for embedded_svc::ipv4::Configuration {
+        fn from(s: super::ipv4::Configuration) -> embedded_svc::ipv4::Configuration {
+            match s {
                 super::ipv4::Configuration::Client(client) => {
                     let config = match client {
                         super::ipv4::ClientConfiguration::DHCP(dhcp) => {

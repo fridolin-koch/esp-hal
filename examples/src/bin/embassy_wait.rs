@@ -1,9 +1,9 @@
 //! embassy wait
 //!
-//! This is an example of asynchronously `Wait`ing for a pin state to change.
+//! This is an example of asynchronously `Wait`ing for a pin state (boot button) to change.
 
 //% CHIPS: esp32 esp32c2 esp32c3 esp32c6 esp32h2 esp32s2 esp32s3
-//% FEATURES: async embassy embassy-time-timg0 embassy-generic-timers
+//% FEATURES: async embassy embassy-generic-timers
 
 #![no_std]
 #![no_main]
@@ -15,20 +15,19 @@ use esp_hal::{
     clock::ClockControl,
     gpio::{Input, Io, Pull},
     peripherals::Peripherals,
-    prelude::*,
     system::SystemControl,
     timer::timg::TimerGroup,
 };
 
-#[main]
+#[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) {
     esp_println::println!("Init!");
     let peripherals = Peripherals::take();
     let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let timg0 = TimerGroup::new_async(peripherals.TIMG0, &clocks);
-    esp_hal_embassy::init(&clocks, timg0);
+    let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
+    esp_hal_embassy::init(&clocks, timg0.timer0);
 
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
     #[cfg(any(feature = "esp32", feature = "esp32s2", feature = "esp32s3"))]

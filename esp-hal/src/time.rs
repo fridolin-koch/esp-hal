@@ -1,13 +1,15 @@
+//! # Time
+//!
+//! ## Overview
 //! The `time` module offers a way to get the system uptime.
 //!
-//! ### Example
+//! ## Examples
 //! ```rust, no_run
 #![doc = crate::before_snippet!()]
 //! # use esp_hal::time;
 //! let time = time::current_time();
 //! # }
 //! ```
-#![warn(missing_docs)]
 
 /// Provides time since system start in microseconds precision
 ///
@@ -48,7 +50,7 @@ pub fn current_time() -> fugit::Instant<u64, 1, 1_000_000> {
         let ticks = crate::timer::systimer::SystemTimer::now();
         (
             ticks,
-            (crate::timer::systimer::SystemTimer::TICKS_PER_SECOND / 1_000_000),
+            (crate::timer::systimer::SystemTimer::ticks_per_second() / 1_000_000),
         )
     };
 

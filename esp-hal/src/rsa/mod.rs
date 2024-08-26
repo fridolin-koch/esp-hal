@@ -1,12 +1,17 @@
-//! # RSA Accelerator support.
+//! # Rivest–Shamir–Adleman (RSA) Accelerator.
 //!
 //! ## Overview
-//! The `RSA` driver provides a set of functions to accelerate `RSA
-//! (Rivest–Shamir–Adleman)` cryptographic operations on ESP chips. `RSA` is a
-//! widely used `public-key` cryptographic algorithm that involves complex
-//! mathematical computations, and the `RSA` accelerator on `ESP` chips is
-//! designed to optimize these computations for faster performance.
+//! The RSA Accelerator provides hardware support for high precision computation
+//! used in various RSA asymmetric cipher algorithms by significantly reducing
+//! their software complexity. Compared with RSA algorithms implemented solely
+//! in software, this hardware accelerator can speed up RSA algorithms
+//! significantly.
 //!
+//! ## Configuration
+//! The RSA Accelerator also supports operands of different lengths, which
+//! provides more flexibility during the computation.
+//!
+//! ## Usage
 //! Implementation details;
 //!    * The driver uses low-level peripheral access to read and write data
 //!      from/to the `RSA` peripheral.
@@ -22,9 +27,9 @@
 //! This peripheral supports `async` on every available chip except of `esp32`
 //! (to be solved).
 //!
-//! ⚠️: The examples for RSA peripheral are quite extensive, so for a more
-//! detailed study of how to use this driver please visit [the repository
-//! with corresponding example].
+//! ## Examples
+//! ### Modular Exponentiation, Modular Multiplication, and Multiplication
+//! Visit the [RSA] test for an example of using the peripheral.
 //!
 //! [nb]: https://docs.rs/nb/1.1.0/nb/
 //! [the repository with corresponding example]: https://github.com/esp-rs/esp-hal/blob/main/hil-test/tests/rsa.rs
@@ -36,6 +41,7 @@ use crate::{
     peripheral::{Peripheral, PeripheralRef},
     peripherals::RSA,
     system::{Peripheral as PeripheralEnable, PeripheralClockControl},
+    InterruptConfigurable,
 };
 
 #[cfg_attr(esp32s2, path = "esp32sX.rs")]
@@ -54,12 +60,30 @@ pub struct Rsa<'d, DM: crate::Mode> {
     phantom: PhantomData<DM>,
 }
 
+impl<'d, DM: crate::Mode> Rsa<'d, DM> {
+    fn internal_set_interrupt_handler(&mut self, handler: InterruptHandler) {
+        unsafe {
+            crate::interrupt::bind_interrupt(crate::peripherals::Interrupt::RSA, handler.handler());
+            crate::interrupt::enable(crate::peripherals::Interrupt::RSA, handler.priority())
+                .unwrap();
+        }
+    }
+}
+
 impl<'d> Rsa<'d, crate::Blocking> {
     /// Create a new instance in [crate::Blocking] mode.
     ///
     /// Optionally an interrupt handler can be bound.
-    pub fn new(rsa: impl Peripheral<P = RSA> + 'd, interrupt: Option<InterruptHandler>) -> Self {
-        Self::new_internal(rsa, interrupt)
+    pub fn new(rsa: impl Peripheral<P = RSA> + 'd) -> Self {
+        Self::new_internal(rsa)
+    }
+}
+
+impl<'d> crate::private::Sealed for Rsa<'d, crate::Blocking> {}
+
+impl<'d> InterruptConfigurable for Rsa<'d, crate::Blocking> {
+    fn set_interrupt_handler(&mut self, handler: InterruptHandler) {
+        self.internal_set_interrupt_handler(handler);
     }
 }
 
@@ -67,29 +91,18 @@ impl<'d> Rsa<'d, crate::Blocking> {
 impl<'d> Rsa<'d, crate::Async> {
     /// Create a new instance in [crate::Blocking] mode.
     pub fn new_async(rsa: impl Peripheral<P = RSA> + 'd) -> Self {
-        Self::new_internal(rsa, Some(asynch::rsa_interrupt_handler))
+        let mut this = Self::new_internal(rsa);
+        this.internal_set_interrupt_handler(asynch::rsa_interrupt_handler);
+        this
     }
 }
 
 impl<'d, DM: crate::Mode> Rsa<'d, DM> {
-    fn new_internal(
-        rsa: impl Peripheral<P = RSA> + 'd,
-        interrupt: Option<InterruptHandler>,
-    ) -> Self {
+    fn new_internal(rsa: impl Peripheral<P = RSA> + 'd) -> Self {
         crate::into_ref!(rsa);
 
+        PeripheralClockControl::reset(PeripheralEnable::Rsa);
         PeripheralClockControl::enable(PeripheralEnable::Rsa);
-
-        if let Some(interrupt) = interrupt {
-            unsafe {
-                crate::interrupt::bind_interrupt(
-                    crate::peripherals::Interrupt::RSA,
-                    interrupt.handler(),
-                );
-                crate::interrupt::enable(crate::peripherals::Interrupt::RSA, interrupt.priority())
-                    .unwrap();
-            }
-        }
 
         Self {
             rsa,
@@ -126,38 +139,52 @@ impl<'d, DM: crate::Mode> Rsa<'d, DM> {
     }
 }
 
+/// Defines an RSA operation mode.
 pub trait RsaMode: crate::private::Sealed {
+    /// The input data type used for the RSA operation.
     type InputType;
 }
+
+/// A trait for RSA operations that involve multiple inputs and outputs.
 pub trait Multi: RsaMode {
+    /// The type of the output produced by the RSA operation.
     type OutputType;
 }
 
 macro_rules! implement_op {
     (($x:literal, multi)) => {
-    paste! {pub struct [<Op $x>];}
-    paste! {
-        impl Multi for [<Op $x>] {
-        type OutputType = [u32; $x*2 / 32];
-    }}
-    paste! {
-        impl crate::private::Sealed for [<Op $x>] {}
-    }
-    paste! {
-    impl RsaMode for [<Op $x>] {
-        type InputType = [u32; $x / 32];
-    }}
-    };
-
-    (($x:literal)) => {
-        paste! {pub struct [<Op $x>];}
+        paste! {
+            /// Represents an RSA operation for the given bit size with multi-output.
+            pub struct [<Op $x>];
+        }
+        paste! {
+            impl Multi for [<Op $x>] {
+                type OutputType = [u32; $x * 2 / 32];
+            }
+        }
         paste! {
             impl crate::private::Sealed for [<Op $x>] {}
         }
-        paste!{
-        impl RsaMode for [<Op $x>] {
-            type InputType =  [u32; $x / 32];
-        }}
+        paste! {
+            impl RsaMode for [<Op $x>] {
+                type InputType = [u32; $x / 32];
+            }
+        }
+    };
+
+    (($x:literal)) => {
+        paste! {
+            /// Represents an RSA operation for the given bit size.
+            pub struct [<Op $x>];
+        }
+        paste! {
+            impl crate::private::Sealed for [<Op $x>] {}
+        }
+        paste! {
+            impl RsaMode for [<Op $x>] {
+                type InputType = [u32; $x / 32];
+            }
+        }
     };
 
     ($x:tt, $($y:tt),+) => {
@@ -271,6 +298,7 @@ where
     }
 }
 
+/// Async functionality
 #[cfg(feature = "async")]
 pub(crate) mod asynch {
     use core::task::Poll;
@@ -288,11 +316,13 @@ pub(crate) mod asynch {
 
     static WAKER: AtomicWaker = AtomicWaker::new();
 
+    /// `Future` that waits for the RSA operation to complete.
     pub(crate) struct RsaFuture<'d> {
         instance: &'d crate::peripherals::RSA,
     }
 
     impl<'d> RsaFuture<'d> {
+        /// Asynchronously initializes the RSA peripheral.
         pub async fn new(instance: &'d crate::peripherals::RSA) -> Self {
             #[cfg(not(any(esp32, esp32s2, esp32s3)))]
             instance.int_ena().modify(|_, w| w.int_ena().set_bit());
@@ -345,13 +375,14 @@ pub(crate) mod asynch {
     where
         T: RsaMode<InputType = [u32; N]>,
     {
+        /// Asynchronously performs an RSA modular exponentiation operation.
         pub async fn exponentiation(
             &mut self,
             base: &T::InputType,
             r: &T::InputType,
             outbuf: &mut T::InputType,
         ) {
-            self.start_exponentiation(&base, &r);
+            self.start_exponentiation(base, r);
             RsaFuture::new(&self.rsa.rsa).await;
             self.read_results(outbuf);
         }
@@ -362,6 +393,7 @@ pub(crate) mod asynch {
         T: RsaMode<InputType = [u32; N]>,
     {
         #[cfg(not(esp32))]
+        /// Asynchronously performs an RSA modular multiplication operation.
         pub async fn modular_multiplication(
             &mut self,
             r: &T::InputType,
@@ -373,6 +405,7 @@ pub(crate) mod asynch {
         }
 
         #[cfg(esp32)]
+        /// Asynchronously performs an RSA modular multiplication operation.
         pub async fn modular_multiplication(
             &mut self,
             operand_a: &T::InputType,
@@ -392,6 +425,7 @@ pub(crate) mod asynch {
         T: RsaMode<InputType = [u32; N]>,
     {
         #[cfg(not(esp32))]
+        /// Asynchronously performs an RSA multiplication operation.
         pub async fn multiplication<'b, const O: usize>(
             &mut self,
             operand_b: &T::InputType,
@@ -405,6 +439,7 @@ pub(crate) mod asynch {
         }
 
         #[cfg(esp32)]
+        /// Asynchronously performs an RSA multiplication operation.
         pub async fn multiplication<'b, const O: usize>(
             &mut self,
             operand_a: &T::InputType,
@@ -420,6 +455,7 @@ pub(crate) mod asynch {
     }
 
     #[handler]
+    /// Interrupt handler for RSA.
     pub(super) fn rsa_interrupt_handler() {
         #[cfg(not(any(esp32, esp32s2, esp32s3)))]
         unsafe { &*crate::peripherals::RSA::ptr() }
