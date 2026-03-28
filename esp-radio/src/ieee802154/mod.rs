@@ -113,8 +113,10 @@ impl Default for Config {
 ///
 /// 1. Call [`Ieee802154::set_transmit_security`] once to configure the key and extended address.
 /// 2. Use [`Ieee802154::transmit_secured`] to transmit frames with inline hardware encryption. The
-///    frame buffer must contain the MAC header and Auxiliary Security Header (with frame counter),
-///    but the payload must be **plaintext** — the hardware encrypts it in-place during TX.
+///    frame buffer must contain the MAC header, Auxiliary Security Header (with frame counter),
+///    plaintext payload, space for the MIC, and FCS placeholder bytes. The hardware encrypts the
+///    payload in-place and writes the MIC during TX DMA.
+///
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct TransmitSecurity {
@@ -299,14 +301,21 @@ impl<'a> Ieee802154<'a> {
 
     /// Transmit a raw frame with hardware AES-CCM* encryption.
     ///
-    /// The `frame` must contain the MAC header with Security Enabled bit
-    /// set and a valid Auxiliary Security Header (security control byte +
-    /// frame counter). The payload must be **plaintext** — the hardware
-    /// encrypts it inline during transmission and appends the MIC.
+    /// The `frame` must contain:
+    /// - MAC header with Security Enabled bit set
+    /// - Auxiliary Security Header (security control byte + frame counter)
+    /// - Plaintext payload (hardware encrypts this in-place during TX)
+    /// - MIC placeholder bytes (4/8/16 bytes depending on security level)
+    /// - FCS placeholder (2 bytes, hardware computes CRC)
     ///
-    /// `payload_offset` is the byte offset from `frame[0]` (the length
-    /// byte) to the first byte of plaintext payload. This tells the
-    /// hardware where encryption starts.
+    /// The frame length (used as the PHR byte) must account for ALL of
+    /// these, including the MIC. The hardware writes the MIC into the
+    /// placeholder space during encryption.
+    ///
+    /// `payload_offset` is the byte offset from `frame[0]` to the first
+    /// byte of plaintext payload. This counts from the start of frame
+    /// data (the first Frame Control byte), NOT from the length byte
+    /// (which is prepended internally).
     ///
     /// `cca`: if true, perform Clear Channel Assessment before transmitting.
     ///

@@ -21,12 +21,17 @@ use esp_radio::ieee802154::{Config, Ieee802154, TransmitSecurity};
 
 // Example 128-bit key (DO NOT use in production)
 const SECURITY_KEY: [u8; 16] = [
-    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-    0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
+    0x10,
 ];
 
 // Source extended address (must match frame's source address for nonce)
 const EXT_ADDR: u64 = 0x1122334455667788;
+
+// MIC size for security level 5 (ENC-MIC-32) = 4 bytes
+const MIC_SIZE: usize = 4;
+// FCS (Frame Check Sequence) = 2 bytes
+const FCS_SIZE: usize = 2;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -57,31 +62,44 @@ fn main() -> ! {
 
     loop {
         // Build raw IEEE 802.15.4 frame with Auxiliary Security Header.
-        // Frame Control (2B) | Seq (1B) | Dst PAN (2B) | Dst Addr (2B) |
-        // Aux Security Hdr: SecCtrl (1B) + FrameCounter (4B) |
-        // Payload (plaintext) | FCS (2B)
-        let mut frame = [0u8; 32];
+        //
+        // Layout:
+        //   Frame Control (2B) | Seq (1B) | Dst PAN (2B) | Dst Addr (2B) |
+        //   Aux Sec Hdr: SecCtrl (1B) + FrameCounter (4B) |
+        //   Payload (plaintext, HW encrypts) | MIC placeholder (4B) | FCS (2B)
+        //
+        // The frame length (PHR) must account for ALL bytes including MIC + FCS.
+        // The hardware writes the MIC and FCS into the placeholder space.
+        let mut frame = [0u8; 40];
         let mut i = 0;
 
         // Frame Control: data frame (0x01), security enabled (0x08),
         // PAN ID compression (0x40) = 0x0049
-        frame[i] = 0x49; i += 1; // FC low byte
-        frame[i] = 0x00; i += 1; // FC high byte
+        frame[i] = 0x49;
+        i += 1; // FC low byte
+        frame[i] = 0x00;
+        i += 1; // FC high byte
 
         // Sequence number
-        frame[i] = seq; i += 1;
+        frame[i] = seq;
+        i += 1;
 
         // Destination PAN ID (broadcast)
-        frame[i] = 0xFF; i += 1;
-        frame[i] = 0xFF; i += 1;
+        frame[i] = 0xFF;
+        i += 1;
+        frame[i] = 0xFF;
+        i += 1;
 
         // Destination short address (broadcast)
-        frame[i] = 0xFF; i += 1;
-        frame[i] = 0xFF; i += 1;
+        frame[i] = 0xFF;
+        i += 1;
+        frame[i] = 0xFF;
+        i += 1;
 
         // Auxiliary Security Header
         // Security Control: security level 5 (ENC-MIC-32), key ID mode 0
-        frame[i] = 0x05; i += 1;
+        frame[i] = 0x05;
+        i += 1;
 
         // Frame Counter (little-endian)
         let fc_bytes = frame_counter.to_le_bytes();
@@ -89,6 +107,7 @@ fn main() -> ! {
         i += 4;
 
         // payload_offset: byte index where plaintext payload begins
+        // (relative to frame data start, NOT the length byte)
         let payload_offset = i as u8;
 
         // Plaintext payload (hardware encrypts this in-place during TX)
@@ -96,13 +115,16 @@ fn main() -> ! {
         frame[i..i + payload.len()].copy_from_slice(payload);
         i += payload.len();
 
+        // MIC placeholder (4 bytes for ENC-MIC-32 / security level 5)
+        // The hardware writes the computed MIC here during encryption.
+        i += MIC_SIZE;
+
         // FCS placeholder (hardware computes CRC)
-        frame[i] = 0x00; i += 1;
-        frame[i] = 0x00; i += 1;
+        i += FCS_SIZE;
 
         println!(
-            "TX secured frame seq={} fc={} offset={}",
-            seq, frame_counter, payload_offset
+            "TX secured frame seq={} fc={} offset={} len={}",
+            seq, frame_counter, payload_offset, i
         );
 
         ieee802154
