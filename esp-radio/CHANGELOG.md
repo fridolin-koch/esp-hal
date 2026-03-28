@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- IEEE 802.15.4 hardware AES-CCM* TX encryption via `TransmitSecurity`, `Ieee802154::set_transmit_security()` and `Ieee802154::transmit_secured()` (#XXXX)
+- Enable modem security clocks for ESP32-H2 IEEE 802.15.4 (#XXXX)
 - It's now possible to obtain the access point info of the currently connected AP, by using `WifiController::ap_info(&self)` (#4405)
 - `ble::mac` to get the MAC address of the device (#4485)
 - `last_calibration_result` to get the result of the last calibration (#4479)

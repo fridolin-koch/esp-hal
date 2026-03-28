@@ -415,6 +415,74 @@ pub(crate) fn set_transmit_security(enable: bool) {
         .modify(|_, w| w.sec_en().bit(enable));
 }
 
+/// Set the payload offset for CCM* encryption.
+///
+/// This is the byte offset from the start of the frame to where the
+/// encrypted payload begins (i.e., past the MAC header and Auxiliary
+/// Security Header). The hardware uses this to know which bytes to
+/// encrypt and where to compute the MIC over.
+#[inline(always)]
+pub(crate) fn set_security_payload_offset(offset: u8) {
+    IEEE802154::regs()
+        .sec_ctrl()
+        .modify(|_, w| unsafe { w.sec_payload_offset().bits(offset) });
+}
+
+/// Write the 128-bit AES key for CCM* encryption.
+///
+/// The key is written as 4 little-endian 32-bit words to SEC_KEY[0..3].
+#[inline(always)]
+pub(crate) fn set_security_key(key: &[u8; 16]) {
+    let regs = IEEE802154::regs();
+    for i in 0..4 {
+        let word = u32::from_le_bytes([key[i * 4], key[i * 4 + 1], key[i * 4 + 2], key[i * 4 + 3]]);
+        regs.sec_key(i)
+            .write(|w| unsafe { w.sec_key0().bits(word) });
+    }
+}
+
+/// Set the 64-bit extended address used for CCM* nonce construction.
+///
+/// The nonce is built from this address plus the frame counter from the
+/// Auxiliary Security Header. The address should match the source
+/// extended address in the frame.
+#[inline(always)]
+pub(crate) fn set_security_ext_addr(addr: u64) {
+    let lo = addr as u32;
+    let hi = (addr >> 32) as u32;
+    IEEE802154::regs()
+        .sec_extend_address0()
+        .write(|w| unsafe { w.sec_extend_address0().bits(lo) });
+    IEEE802154::regs()
+        .sec_extend_address1()
+        .write(|w| unsafe { w.sec_extend_address1().bits(hi) });
+}
+
+/// Read the TX CCM schedule status register.
+///
+/// Non-zero indicates the CCM encryption engine state. Can be polled
+/// to check completion or inspected after a `TxSecurityError`.
+#[inline(always)]
+#[allow(dead_code)]
+pub(crate) fn tx_ccm_schedule_status() -> u32 {
+    IEEE802154::regs()
+        .tx_ccm_schedule_status()
+        .read()
+        .tx_ccm_schedule_status()
+        .bits()
+}
+
+/// Read (and implicitly clear by reading) the TX security error counter.
+#[inline(always)]
+#[allow(dead_code)]
+pub(crate) fn tx_security_error_count() -> u16 {
+    IEEE802154::regs()
+        .tx_security_error_cnt()
+        .read()
+        .tx_security_error_cnt()
+        .bits()
+}
+
 #[inline(always)]
 pub(crate) fn set_rx_addr(addr: *mut u8) {
     IEEE802154::regs()

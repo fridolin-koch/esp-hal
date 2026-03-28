@@ -36,6 +36,7 @@ static mut RX_BUFFER: [u8; FRAME_SIZE] = [0u8; FRAME_SIZE];
 struct PendingTx {
     frame: *const u8,
     cca: bool,
+    security: Option<u8>, // Some(payload_offset) if secure TX
 }
 
 // Safety: PendingTx holds a raw pointer to a caller-managed buffer that remains
@@ -60,6 +61,19 @@ static STATE: NonReentrantMutex<IeeeState> = NonReentrantMutex::new(IeeeState {
     pending_tx: None,
     ack_frame: None,
 });
+
+/// Configured security key + address. Written by set_security_config,
+/// read by tx_init when security is enabled.
+struct SecurityConfig {
+    key: [u8; 16],
+    ext_addr: u64,
+}
+
+static SECURITY_CONFIG: NonReentrantMutex<SecurityConfig> =
+    NonReentrantMutex::new(SecurityConfig {
+        key: [0u8; 16],
+        ext_addr: 0,
+    });
 
 unsafe extern "C" {
     fn bt_bb_v2_init_cmplx(print_version: u8); // from libbtbb.a
@@ -179,11 +193,20 @@ fn ieee802154_set_txrx_pti(txrx_scene: Ieee802154TxRxScene) {
     }
 }
 
-fn tx_init(state: &mut IeeeState, frame: *const u8) {
+fn tx_init(state: &mut IeeeState, frame: *const u8, security: Option<u8>) {
     stop_current_operation_inner(state);
 
     ieee802154_pib_update();
-    set_transmit_security(false);
+
+    match security {
+        Some(payload_offset) => {
+            set_security_payload_offset(payload_offset);
+            set_transmit_security(true);
+        }
+        None => {
+            set_transmit_security(false);
+        }
+    }
 
     state.ack_frame = None;
 
@@ -191,7 +214,6 @@ fn tx_init(state: &mut IeeeState, frame: *const u8) {
 
     if frame_is_ack_required(unsafe { core::slice::from_raw_parts(frame.add(1), *frame as usize) })
     {
-        // set rx pointer for ack frame
         set_next_rx_buffer();
     }
 }
@@ -200,6 +222,16 @@ pub(crate) fn set_queue_size(rx_queue_size: usize) {
     STATE.with(|state| {
         state.rx_queue_size = rx_queue_size;
     });
+}
+
+pub(crate) fn set_security_config(security: &super::TransmitSecurity) {
+    SECURITY_CONFIG.with(|cfg| {
+        cfg.key = security.key;
+        cfg.ext_addr = security.ext_addr;
+    });
+    // Write to hardware registers immediately so they're ready for TX
+    set_security_key(&security.key);
+    set_security_ext_addr(security.ext_addr);
 }
 
 /// Pointer to the current TX frame (stored for ACK handling)
@@ -215,7 +247,11 @@ pub fn ieee802154_transmit(frame: *const u8, cca: bool) -> i32 {
         {
             // Defer: store pending TX and enable all RX abort events so we
             // know when the current operation finishes.
-            state.pending_tx = Some(PendingTx { frame, cca });
+            state.pending_tx = Some(PendingTx {
+                frame,
+                cca,
+                security: None,
+            });
             enable_rx_abort_events(RxAbortReason::all());
             return;
         }
@@ -227,10 +263,52 @@ pub fn ieee802154_transmit(frame: *const u8, cca: bool) -> i32 {
     0 // ESP_OK
 }
 
+pub fn ieee802154_transmit_secured(frame: *const u8, payload_offset: u8, cca: bool) -> i32 {
+    STATE.with(|state| {
+        if state.state == Ieee802154State::TxAck
+            || state.state == Ieee802154State::TxEnhAck
+            || (state.state == Ieee802154State::Receive && is_current_rx_frame())
+        {
+            state.pending_tx = Some(PendingTx {
+                frame,
+                cca,
+                security: Some(payload_offset),
+            });
+            enable_rx_abort_events(RxAbortReason::all());
+            return;
+        }
+
+        state.pending_tx = None;
+        transmit_secured_internal(state, frame, payload_offset, cca);
+    });
+
+    0
+}
+
 fn transmit_internal(state: &mut IeeeState, frame: *const u8, cca: bool) {
     unsafe { TX_FRAME = frame };
 
-    tx_init(state, frame);
+    tx_init(state, frame, None);
+
+    ieee802154_set_txrx_pti(Ieee802154TxRxScene::Tx);
+
+    if cca {
+        set_cmd(Command::CcaTxStart);
+    } else {
+        set_cmd(Command::TxStart);
+    }
+    state.state = Ieee802154State::Transmit;
+}
+
+fn transmit_secured_internal(
+    state: &mut IeeeState,
+    frame: *const u8,
+    payload_offset: u8,
+    cca: bool,
+) {
+    unsafe { TX_FRAME = frame };
+
+    tx_init(state, frame, Some(payload_offset));
 
     ieee802154_set_txrx_pti(Ieee802154TxRxScene::Tx);
 
@@ -471,7 +549,14 @@ fn next_operation_inner(state: &mut IeeeState) {
         enable_rx_abort_events(RxAbortReason::TxAckTimeout | RxAbortReason::TxAckCoexBreak);
         // Clear any stale RX abort events created during deferral
         clear_events(Event::RxAbort as u16);
-        transmit_internal(state, pending.frame, pending.cca);
+        match pending.security {
+            Some(payload_offset) => {
+                transmit_secured_internal(state, pending.frame, payload_offset, pending.cca);
+            }
+            None => {
+                transmit_internal(state, pending.frame, pending.cca);
+            }
+        }
     } else if ieee802154_pib_get_rx_when_idle() {
         enable_rx();
         state.state = Ieee802154State::Receive;

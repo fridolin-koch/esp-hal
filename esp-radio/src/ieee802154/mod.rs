@@ -103,6 +103,28 @@ impl Default for Config {
     }
 }
 
+/// Configuration for hardware AES-CCM* TX encryption.
+///
+/// The IEEE 802.15.4 MAC peripheral can perform inline AES-128-CCM*
+/// encryption during frame transmission. This only covers TX — received
+/// frames must be decrypted in software.
+///
+/// # Usage
+///
+/// 1. Call [`Ieee802154::set_transmit_security`] once to configure the key and extended address.
+/// 2. Use [`Ieee802154::transmit_secured`] to transmit frames with inline hardware encryption. The
+///    frame buffer must contain the MAC header and Auxiliary Security Header (with frame counter),
+///    but the payload must be **plaintext** — the hardware encrypts it in-place during TX.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct TransmitSecurity {
+    /// 128-bit AES key for CCM* encryption.
+    pub key: [u8; 16],
+    /// 64-bit extended address used for CCM* nonce construction.
+    /// Must match the source extended address in transmitted frames.
+    pub ext_addr: u64,
+}
+
 /// IEEE 802.15.4 driver
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -262,6 +284,48 @@ impl<'a> Ieee802154<'a> {
         self.transmit_buffer[0] = frame.len() as u8;
 
         ieee802154_transmit(self.transmit_buffer.as_ptr(), cca);
+
+        Ok(())
+    }
+
+    /// Configure the hardware AES-CCM* encryption parameters.
+    ///
+    /// This writes the 128-bit key and extended address to the MAC
+    /// security registers. Call this once before using
+    /// [`transmit_secured`](Self::transmit_secured).
+    pub fn set_transmit_security(&mut self, security: &TransmitSecurity) {
+        raw::set_security_config(security);
+    }
+
+    /// Transmit a raw frame with hardware AES-CCM* encryption.
+    ///
+    /// The `frame` must contain the MAC header with Security Enabled bit
+    /// set and a valid Auxiliary Security Header (security control byte +
+    /// frame counter). The payload must be **plaintext** — the hardware
+    /// encrypts it inline during transmission and appends the MIC.
+    ///
+    /// `payload_offset` is the byte offset from `frame[0]` (the length
+    /// byte) to the first byte of plaintext payload. This tells the
+    /// hardware where encryption starts.
+    ///
+    /// `cca`: if true, perform Clear Channel Assessment before transmitting.
+    ///
+    /// Returns [`Error::BadInput`] if `payload_offset` exceeds 127 (7-bit
+    /// register field).
+    pub fn transmit_secured(
+        &mut self,
+        frame: &[u8],
+        payload_offset: u8,
+        cca: bool,
+    ) -> Result<(), Error> {
+        if payload_offset > 127 {
+            return Err(Error::BadInput);
+        }
+
+        self.transmit_buffer[1..][..frame.len()].copy_from_slice(frame);
+        self.transmit_buffer[0] = frame.len() as u8;
+
+        raw::ieee802154_transmit_secured(self.transmit_buffer.as_ptr(), payload_offset, cca);
 
         Ok(())
     }
