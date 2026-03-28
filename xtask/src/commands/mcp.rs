@@ -108,7 +108,9 @@ impl ServerHandler for EspHalServer {
 
         ServerInfo {
             instructions: Some(instructions.into()),
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
+            capabilities: ServerCapabilities::builder()
+                .enable_tools()
+                .build(),
             ..Default::default()
         }
     }
@@ -136,7 +138,12 @@ impl ServerHandler for EspHalServer {
         let tool_name = request.name.as_ref();
         let reg = inventory::iter::<crate::McpToolRegistration>()
             .find(|r| r.name == tool_name)
-            .ok_or_else(|| ErrorData::invalid_params(format!("Unknown tool: {tool_name}"), None))?;
+            .ok_or_else(|| {
+                ErrorData::invalid_params(
+                    format!("Unknown tool: {tool_name}"),
+                    None,
+                )
+            })?;
 
         let json = Value::Object(request.arguments.unwrap_or_default());
         match (reg.execute_fn)(json) {
