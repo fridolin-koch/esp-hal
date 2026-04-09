@@ -52,25 +52,23 @@ use clocks::RtcSlowClkConfig;
 #[cfg(soc_has_clock_node_timg_function_clock)]
 use clocks::TimgFunctionClockConfig;
 
-/// Low-level clock control
+/// # Low-level clock control
 ///
 /// <section class="warning">
 /// This module provides experimental low-level clock control functionality. These functions
 /// can render your device temporarily unusable. Use with caution.
 /// </section>
-#[cfg(feature = "unstable")]
-#[cfg_attr(docsrs, doc(cfg(feature = "unstable")))]
+#[doc = ""]
+#[instability::unstable]
 pub mod ll {
-    #[cfg(feature = "unstable")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "unstable")))]
+    #[instability::unstable]
     pub use crate::soc::clocks::*;
 }
 
-#[cfg(feature = "unstable")]
-#[cfg_attr(docsrs, doc(cfg(feature = "unstable")))]
+#[cfg(timergroup_rc_fast_calibration_divider)]
+use crate::efuse::ChipRevision;
+#[instability::unstable]
 pub use crate::soc::clocks::ClockConfig;
-#[cfg(not(feature = "unstable"))]
-pub(crate) use crate::soc::clocks::ClockConfig;
 pub use crate::soc::clocks::CpuClock;
 use crate::{ESP_HAL_LOCK, soc::clocks, time::Rate};
 #[cfg(soc_has_clock_node_timg_calibration_clock)]
@@ -277,13 +275,49 @@ impl Clocks {
         #[cfg(soc_has_clock_node_timg_function_clock)] function_clock: TimgFunctionClockConfig,
         slow_cycles: u32,
     ) -> (u32, Rate) {
+        // There may already be another calibration process running when we call this function,
+        // so we should wait until the previous process is finished.
+        #[cfg(not(esp32))]
+        if TIMG0::regs()
+            .rtccalicfg()
+            .read()
+            .rtc_cali_start_cycling()
+            .bit()
+        {
+            // Set a small timeout threshold to speed up timeout occurrence.
+            // The internal circuit will be reset when the timeout occurs and will not affect
+            // the next calibration.
+            TIMG0::regs()
+                .rtccalicfg2()
+                .modify(|_, w| unsafe { w.rtc_cali_timeout_thres().bits(1) });
+
+            loop {
+                if TIMG0::regs()
+                    .rtccalicfg()
+                    .read()
+                    .rtc_cali_rdy()
+                    .bit_is_set()
+                    || TIMG0::regs()
+                        .rtccalicfg2()
+                        .read()
+                        .rtc_cali_timeout()
+                        .bit_is_set()
+                {
+                    break;
+                }
+            }
+        }
+        TIMG0::regs()
+            .rtccalicfg()
+            .modify(|_, w| w.rtc_cali_start_cycling().clear_bit());
+
         use esp_rom_sys::rom::ets_delay_us;
 
         #[cfg(timergroup_rc_fast_calibration_divider)]
         let calibration_divider = if rtc_clock == TimgCalibrationClockConfig::RcFastDivClk
-            && crate::soc::chip_revision_above(property!(
+            && crate::soc::chip_revision_above(ChipRevision::from_combined(property!(
                 "timergroup.rc_fast_calibration_divider_min_rev"
-            )) {
+            ))) {
             property!("timergroup.rc_fast_calibration_divider")
         } else {
             1

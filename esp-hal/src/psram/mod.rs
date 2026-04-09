@@ -1,6 +1,6 @@
 #![cfg_attr(docsrs, procmacros::doc_replace(
     "octal" => {
-        cfg(octal_psram) => "Either `Octal` or `Quad` PSRAM will be used, depending on the setting of `ESP_HAL_CONFIG_PSRAM_MODE`.",
+        cfg(psram_octal_spi) => "Either `Octal` or `Quad` PSRAM will be used, depending on the setting of `ESP_HAL_CONFIG_PSRAM_MODE`.",
         _ => ""
     }
 ))]
@@ -51,6 +51,7 @@ use core::ops::Range;
 #[cfg_attr(esp32, path = "esp32.rs")]
 #[cfg_attr(esp32s2, path = "esp32s2.rs")]
 #[cfg_attr(esp32s3, path = "esp32s3.rs")]
+#[cfg_attr(any(esp32c5, esp32c61), path = "esp32c5_c61.rs")]
 pub(crate) mod implem;
 
 #[cfg(feature = "psram")]
